@@ -8,7 +8,6 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.LocalActivity
 import androidx.activity.compose.setContent
-import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -48,7 +47,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -72,9 +70,9 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.lifecycleScope
 import com.aliaygor.taptoflip.ui.theme.TapToFlipTheme
 import com.google.android.gms.ads.AdError
 import com.google.android.gms.ads.AdRequest
@@ -85,8 +83,6 @@ import com.google.android.gms.ads.LoadAdError
 import com.google.android.gms.ads.MobileAds
 import com.google.android.gms.ads.interstitial.InterstitialAd
 import com.google.android.gms.ads.interstitial.InterstitialAdLoadCallback
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import kotlin.math.min
 import kotlin.math.roundToInt
 
@@ -109,15 +105,14 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         super.onCreate(savedInstanceState)
+
+        MobileAds.initialize(this) {
+            loadInterstitial()
+        }
+
         setContent {
             TapToFlipTheme {
                 GameApp()
-            }
-        }
-        lifecycleScope.launch {
-            delay(1_600)
-            MobileAds.initialize(this@MainActivity) {
-                loadInterstitial()
             }
         }
     }
@@ -758,6 +753,13 @@ private fun BannerPanel(activity: MainActivity?) {
                 AdView(context).apply {
                     setAdSize(AdSize.BANNER)
                     adUnitId = activity.bannerAdUnitId
+                    adListener = object : com.google.android.gms.ads.AdListener() {
+                        override fun onAdLoaded() {
+                        }
+
+                        override fun onAdFailedToLoad(error: LoadAdError) {
+                        }
+                    }
                     loadAd(AdRequest.Builder().build())
                 }
             },
