@@ -86,10 +86,68 @@ class GameEngineTest {
         repeat(20) {
             val previous = engine.platforms.last()
             val generated = engine.generatedPlatformForTest()
-            assertTrue(abs(generated.y - previous.y) >= engine.worldHeight * 0.13f)
-            assertTrue(generated.y >= engine.worldHeight * 0.18f)
-            assertTrue(generated.y <= engine.worldHeight * 0.78f)
+            assertTrue(abs(generated.y - previous.y) >= engine.worldHeight * 0.10f)
+            assertTrue(generated.y >= 0f)
+            assertTrue(generated.y + generated.height <= engine.worldHeight)
         }
+    }
+
+    @Test
+    fun obstaclesReachTopAndBottomBands() {
+        val engine = engine()
+        val generated = List(80) { engine.generatedPlatformForTest() }
+
+        assertTrue(generated.any { it.y < engine.worldHeight * 0.1f })
+        assertTrue(generated.any { it.y + it.height > engine.worldHeight * 0.88f })
+    }
+
+    @Test
+    fun highScoreCanSpawnBirds() {
+        val engine = engine()
+        engine.setScoreForTest(500)
+
+        val generated = List(100) { engine.generatedPlatformForTest() }
+
+        assertTrue(generated.any { it.type == ObstacleType.BIRD })
+    }
+
+    @Test
+    fun obstacleCharactersUnlockInScoreStages() {
+        val early = engine()
+        early.setScoreForTest(299)
+        assertTrue(List(40) { early.generatedPlatformForTest() }.all { it.type == ObstacleType.GRASS })
+
+        val advanced = engine()
+        advanced.setScoreForTest(1_500)
+        val types = List(300) { advanced.generatedPlatformForTest().type }.toSet()
+
+        assertTrue(types.containsAll(ObstacleType.entries))
+    }
+
+    @Test
+    fun expertScoresCreateDenserObstacleLayouts() {
+        fun averageGap(score: Int): Float {
+            val engine = engine()
+            engine.setScoreForTest(score)
+            val gaps = mutableListOf<Float>()
+            repeat(80) {
+                val previous = engine.platforms.last()
+                val next = engine.generatedPlatformForTest()
+                gaps += next.x - (previous.x + previous.width)
+            }
+            return gaps.average().toFloat()
+        }
+
+        assertTrue(averageGap(1_500) < averageGap(100))
+    }
+
+    @Test
+    fun difficultyContinuesPastOldSpeedCap() {
+        val engine = engine(gravity = 0f)
+        engine.setScoreForTest(500)
+        engine.update(0.01f)
+
+        assertTrue(engine.difficulty > 1.78f)
     }
 
     @Test

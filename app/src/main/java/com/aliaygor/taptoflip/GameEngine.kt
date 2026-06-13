@@ -1,10 +1,12 @@
 package com.aliaygor.taptoflip
 
 import kotlin.math.abs
+import kotlin.math.ln
 import kotlin.math.max
 import kotlin.random.Random
 
 enum class GameStatus { RUNNING, PAUSED, GAME_OVER }
+enum class ObstacleType { GRASS, BIRD, BEE, BAT, FIREFLY }
 
 data class PlayerState(
     var x: Float = 0f,
@@ -18,7 +20,8 @@ data class PlatformState(
     var x: Float,
     val y: Float,
     val width: Float,
-    val height: Float
+    val height: Float,
+    val type: ObstacleType = ObstacleType.GRASS
 )
 
 class GameEngine(
@@ -42,6 +45,8 @@ class GameEngine(
     var crashFeedback = 0f
         private set
     var scoreEvent = 0
+        private set
+    var roundAge = 0f
         private set
 
     val player = PlayerState()
@@ -86,6 +91,7 @@ class GameEngine(
         jumpFeedback = 0f
         crashFeedback = 0f
         scoreEvent = 0
+        roundAge = 0f
         elapsedScore = 0f
         nextPlatformId = 1
         platforms.clear()
@@ -106,8 +112,9 @@ class GameEngine(
         if (state != GameStatus.RUNNING || !initialized) return
 
         val dt = deltaSeconds.coerceIn(0f, 0.033f)
+        roundAge += dt
         jumpFeedback = (jumpFeedback - dt * 4.5f).coerceAtLeast(0f)
-        difficulty = 1f + (score.coerceAtMost(120) * 0.0065f)
+        difficulty = 1f + ln(1f + score / 70f) * 0.65f
         val scroll = baseScrollSpeed * difficulty * dt
 
         player.velocityY += gravity * dt
@@ -147,6 +154,11 @@ class GameEngine(
         return platforms.last()
     }
 
+    internal fun setScoreForTest(value: Int) {
+        score = value.coerceAtLeast(0)
+        elapsedScore = score.toFloat()
+    }
+
     private fun collidesWithPlayer(platform: PlatformState): Boolean {
         val insetX = player.size * 0.2f
         val insetY = player.size * 0.16f
@@ -166,23 +178,45 @@ class GameEngine(
 
     private fun spawnPlatform() {
         val previous = platforms.maxByOrNull { it.x + it.width }
-        val minWidth = (worldWidth * 0.24f).coerceAtLeast(104f)
-        val maxWidth = (worldWidth * 0.42f).coerceAtLeast(minWidth + 24f)
+        val type = chooseObstacleType()
+        val minWidth = when (type) {
+            ObstacleType.GRASS -> (worldWidth * 0.22f).coerceAtLeast(96f)
+            ObstacleType.BIRD -> (worldWidth * 0.14f).coerceAtLeast(72f)
+            ObstacleType.BEE -> (worldWidth * 0.12f).coerceAtLeast(64f)
+            ObstacleType.BAT -> (worldWidth * 0.15f).coerceAtLeast(76f)
+            ObstacleType.FIREFLY -> (worldWidth * 0.11f).coerceAtLeast(58f)
+        }
+        val maxWidth = when (type) {
+            ObstacleType.GRASS -> (worldWidth * 0.39f).coerceAtLeast(minWidth + 24f)
+            ObstacleType.BIRD -> (worldWidth * 0.23f).coerceAtLeast(minWidth + 18f)
+            ObstacleType.BEE -> (worldWidth * 0.19f).coerceAtLeast(minWidth + 16f)
+            ObstacleType.BAT -> (worldWidth * 0.25f).coerceAtLeast(minWidth + 18f)
+            ObstacleType.FIREFLY -> (worldWidth * 0.17f).coerceAtLeast(minWidth + 14f)
+        }
         val width = randomRange(minWidth, maxWidth)
 
-        val minGap = worldWidth * 0.28f
-        val maxGap = (worldWidth * 0.48f + score.coerceAtMost(100) * 0.45f)
-            .coerceAtMost(worldWidth * 0.58f)
+        val crowding = (score / 1_000f).coerceIn(0f, 1f)
+        val expertCrowding = ((score - 1_000) / 1_500f).coerceIn(0f, 1f)
+        val minGap = worldWidth * (0.27f - crowding * 0.07f - expertCrowding * 0.04f)
+        val maxGap = worldWidth * (0.48f - crowding * 0.13f - expertCrowding * 0.08f)
         val gap = randomRange(minGap, maxGap)
 
-        val minY = worldHeight * 0.18f
-        val maxY = worldHeight * 0.78f
+        val height = when (type) {
+            ObstacleType.GRASS -> platformHeight()
+            ObstacleType.BIRD -> (player.size * 0.62f).coerceIn(38f, 58f)
+            ObstacleType.BEE -> (player.size * 0.52f).coerceIn(34f, 50f)
+            ObstacleType.BAT -> (player.size * 0.66f).coerceIn(42f, 62f)
+            ObstacleType.FIREFLY -> (player.size * 0.48f).coerceIn(32f, 46f)
+        }
+        val minY = worldHeight * 0.025f
+        val maxY = worldHeight - height - worldHeight * 0.025f
         val previousY = previous?.y ?: worldHeight * 0.5f
-        val minVerticalChange = worldHeight * 0.14f
-        var y = randomRange(minY, maxY)
+        val minVerticalChange = worldHeight * 0.115f
+        val lanes = floatArrayOf(0.02f, 0.16f, 0.31f, 0.47f, 0.63f, 0.79f, 0.98f)
+        var y = minY + (maxY - minY) * lanes[random.nextInt(lanes.size)]
         repeat(4) {
             if (abs(y - previousY) >= minVerticalChange) return@repeat
-            y = randomRange(minY, maxY)
+            y = minY + (maxY - minY) * lanes[random.nextInt(lanes.size)]
         }
         if (abs(y - previousY) < minVerticalChange) {
             y = if (previousY < worldHeight * 0.5f) {
@@ -197,8 +231,19 @@ class GameEngine(
             x = (previous?.let { it.x + it.width } ?: worldWidth) + gap,
             y = y,
             width = width,
-            height = platformHeight()
+            height = height,
+            type = type
         )
+    }
+
+    private fun chooseObstacleType(): ObstacleType {
+        val unlocked = mutableListOf(ObstacleType.GRASS)
+        if (score >= 300) unlocked += ObstacleType.BIRD
+        if (score >= 600) unlocked += ObstacleType.BEE
+        if (score >= 900) unlocked += ObstacleType.BAT
+        if (score >= 1_200) unlocked += ObstacleType.FIREFLY
+        if (unlocked.size == 1 || random.nextFloat() < 0.48f) return ObstacleType.GRASS
+        return unlocked[random.nextInt(1, unlocked.size)]
     }
 
     private fun rightmostEdge(): Float =

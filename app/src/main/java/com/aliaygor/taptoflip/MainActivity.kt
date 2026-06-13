@@ -8,6 +8,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.LocalActivity
 import androidx.activity.compose.setContent
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -35,7 +36,10 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -47,6 +51,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -54,6 +59,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -63,16 +69,18 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalResources
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.lifecycleScope
 import com.aliaygor.taptoflip.ui.theme.TapToFlipTheme
 import com.google.android.gms.ads.AdError
 import com.google.android.gms.ads.AdRequest
@@ -83,8 +91,12 @@ import com.google.android.gms.ads.LoadAdError
 import com.google.android.gms.ads.MobileAds
 import com.google.android.gms.ads.interstitial.InterstitialAd
 import com.google.android.gms.ads.interstitial.InterstitialAdLoadCallback
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
+import kotlin.math.sin
 
 private val SkyTop = Color(0xFF70D8FF)
 private val SkyBottom = Color(0xFFD7F5FF)
@@ -105,14 +117,15 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         super.onCreate(savedInstanceState)
-
-        MobileAds.initialize(this) {
-            loadInterstitial()
-        }
-
         setContent {
             TapToFlipTheme {
                 GameApp()
+            }
+        }
+        lifecycleScope.launch {
+            delay(1_600)
+            MobileAds.initialize(this@MainActivity) {
+                loadInterstitial()
             }
         }
     }
@@ -161,10 +174,6 @@ private class GameAudio {
         runCatching { tones?.startTone(ToneGenerator.TONE_PROP_BEEP, 45) }
     }
 
-    fun score() {
-        runCatching { tones?.startTone(ToneGenerator.TONE_PROP_ACK, 70) }
-    }
-
     fun gameOver() {
         runCatching { tones?.startTone(ToneGenerator.TONE_PROP_NACK, 180) }
     }
@@ -184,7 +193,7 @@ private fun GameApp() {
         when (screen) {
             AppScreen.MENU -> MenuScreen(
                 soundEnabled = soundEnabled,
-                onToggleSound = { soundEnabled = !soundEnabled },
+                onToggleSound = { soundEnabled = it },
                 onStart = { screen = AppScreen.GAME },
                 onHowToPlay = { screen = AppScreen.HOW_TO_PLAY },
                 onExit = { activity?.finish() }
@@ -206,7 +215,7 @@ private fun GameApp() {
 @Composable
 private fun MenuScreen(
     soundEnabled: Boolean,
-    onToggleSound: () -> Unit,
+    onToggleSound: (Boolean) -> Unit,
     onStart: () -> Unit,
     onHowToPlay: () -> Unit,
     onExit: () -> Unit
@@ -218,10 +227,7 @@ private fun MenuScreen(
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                PillButton(
-                    text = if (soundEnabled) "SOUND ON" else "SOUND OFF",
-                    onClick = onToggleSound
-                )
+                SoundToggle(soundEnabled, onToggleSound)
             }
             Spacer(Modifier.weight(0.25f))
             Text(
@@ -257,10 +263,9 @@ private fun MenuScreen(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 PrimaryButton("START", onStart)
-                Spacer(Modifier.height(10.dp))
-                SecondaryButton("HOW TO PLAY", onHowToPlay)
-                Spacer(Modifier.height(8.dp))
-                SecondaryButton("EXIT", onExit)
+                Spacer(Modifier.height(6.dp))
+                MenuTextButton("HOW TO PLAY", onHowToPlay)
+                MenuTextButton("EXIT", onExit, color = Color(0xFF9A3D4D))
             }
         }
     }
@@ -328,11 +333,11 @@ private fun GameScreen(soundEnabled: Boolean, onExitToMenu: () -> Unit) {
     }
     val engine = remember { GameEngine() }
     val audio = remember { GameAudio() }
+    val haptic = LocalHapticFeedback.current
     val frog = rememberFrogBitmap()
     var frameVersion by remember { mutableIntStateOf(0) }
     var highScore by remember { mutableIntStateOf(preferences.getInt("high_score", 0)) }
     var adShownForRound by remember { mutableStateOf(false) }
-    var lastScoreEvent by remember { mutableIntStateOf(0) }
 
     DisposableEffect(activity) {
         val observer = LifecycleEventObserver { _, event ->
@@ -358,10 +363,6 @@ private fun GameScreen(soundEnabled: Boolean, onExitToMenu: () -> Unit) {
                 val previousState = engine.state
                 engine.update(dt)
 
-                if (engine.scoreEvent != lastScoreEvent) {
-                    lastScoreEvent = engine.scoreEvent
-                    if (soundEnabled) audio.score()
-                }
                 if (engine.score > highScore) {
                     highScore = engine.score
                     preferences.edit().putInt("high_score", highScore).apply()
@@ -392,7 +393,11 @@ private fun GameScreen(soundEnabled: Boolean, onExitToMenu: () -> Unit) {
                     detectTapGestures {
                         if (engine.state == GameStatus.RUNNING) {
                             engine.jump()
-                            if (soundEnabled) audio.jump()
+                            if (soundEnabled) {
+                                audio.jump()
+                            } else {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            }
                             frameVersion++
                         }
                     }
@@ -401,6 +406,9 @@ private fun GameScreen(soundEnabled: Boolean, onExitToMenu: () -> Unit) {
             frameVersion
             GameplayCanvas(engine)
             FrogSprite(engine, frog)
+            if (engine.state == GameStatus.RUNNING && engine.roundAge < 2.2f) {
+                TapHint(engine)
+            }
 
             when (engine.state) {
                 GameStatus.PAUSED -> PauseOverlay(
@@ -416,7 +424,6 @@ private fun GameScreen(soundEnabled: Boolean, onExitToMenu: () -> Unit) {
                     highScore = highScore,
                     onRestart = {
                         engine.reset()
-                        lastScoreEvent = 0
                         adShownForRound = false
                         frameVersion++
                     },
@@ -495,12 +502,50 @@ private fun BoxScope.FrogSprite(engine: GameEngine, frog: ImageBitmap) {
 }
 
 @Composable
+private fun BoxScope.TapHint(engine: GameEngine) {
+    val density = LocalDensity.current
+    val widthPx = with(density) { 112.dp.toPx() }
+    val heightPx = with(density) { 54.dp.toPx() }
+    val pulse = (0.66f + sin(engine.roundAge * 9f) * 0.28f).coerceIn(0.35f, 1f)
+    Column(
+        modifier = Modifier
+            .offset {
+                IntOffset(
+                    x = (engine.player.x + engine.player.size / 2f - widthPx / 2f).roundToInt(),
+                    y = max(8f, engine.player.y - heightPx - 12f).roundToInt()
+                )
+            }
+            .graphicsLayer {
+                alpha = pulse
+                scaleX = 0.96f + pulse * 0.04f
+                scaleY = 0.96f + pulse * 0.04f
+                shadowElevation = 10f
+            }
+            .background(Color.White.copy(alpha = 0.94f), RoundedCornerShape(18.dp))
+            .padding(horizontal = 16.dp, vertical = 9.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text("TAP!", color = DeepGreen, fontWeight = FontWeight.Black, fontSize = 18.sp)
+        Text("TO JUMP", color = Ink.copy(alpha = 0.68f), fontWeight = FontWeight.Bold, fontSize = 9.sp)
+    }
+}
+
+@Composable
 private fun GameplayCanvas(engine: GameEngine) {
     Canvas(modifier = Modifier.fillMaxSize()) {
         drawSky()
         drawHills()
         drawClouds(engine.difficulty)
-        engine.platforms.forEach(::drawGrassPlatform)
+        engine.platforms.forEach { obstacle ->
+            when (obstacle.type) {
+                ObstacleType.GRASS -> drawGrassPlatform(obstacle, engine.roundAge)
+                ObstacleType.BIRD -> drawBirdObstacle(obstacle, engine.roundAge)
+                ObstacleType.BEE -> drawBeeObstacle(obstacle, engine.roundAge)
+                ObstacleType.BAT -> drawBatObstacle(obstacle, engine.roundAge)
+                ObstacleType.FIREFLY -> drawFireflyObstacle(obstacle, engine.roundAge)
+            }
+        }
+        drawFrogLimbs(engine)
 
         if (engine.jumpFeedback > 0f) {
             val alpha = engine.jumpFeedback * 0.28f
@@ -535,6 +580,60 @@ private fun GameplayCanvas(engine: GameEngine) {
     }
 }
 
+private fun DrawScope.drawFrogLimbs(engine: GameEngine) {
+    if (engine.state == GameStatus.GAME_OVER) return
+    val extension = (
+        (-engine.player.velocityY / 690f).coerceIn(0f, 1f) * 0.7f +
+            engine.jumpFeedback * 0.3f
+        ).coerceIn(0f, 1f)
+    if (extension < 0.04f) return
+
+    val size = engine.player.size
+    val left = engine.player.x
+    val top = engine.player.y
+    val limbColor = Color(0xFF69C934)
+    val footColor = Color(0xFFD7F04B)
+    val stroke = size * 0.12f
+    val armSpread = size * (0.12f + extension * 0.32f)
+    val legSpread = size * (0.12f + extension * 0.38f)
+
+    val leftHand = Offset(left - armSpread, top + size * 0.48f)
+    val rightHand = Offset(left + size + armSpread, top + size * 0.48f)
+    val leftFoot = Offset(left + size * 0.23f - legSpread, top + size * 0.92f)
+    val rightFoot = Offset(left + size * 0.77f + legSpread, top + size * 0.92f)
+    drawLine(
+        limbColor,
+        Offset(left + size * 0.26f, top + size * 0.54f),
+        leftHand,
+        stroke,
+        StrokeCap.Round
+    )
+    drawLine(
+        limbColor,
+        Offset(left + size * 0.74f, top + size * 0.54f),
+        rightHand,
+        stroke,
+        StrokeCap.Round
+    )
+    drawLine(
+        limbColor,
+        Offset(left + size * 0.35f, top + size * 0.78f),
+        leftFoot,
+        stroke * 1.08f,
+        StrokeCap.Round
+    )
+    drawLine(
+        limbColor,
+        Offset(left + size * 0.65f, top + size * 0.78f),
+        rightFoot,
+        stroke * 1.08f,
+        StrokeCap.Round
+    )
+    listOf(leftHand, rightHand, leftFoot, rightFoot).forEach {
+        drawCircle(footColor, size * 0.075f, it)
+    }
+}
+
 private fun DrawScope.drawSky() {
     drawRect(Brush.verticalGradient(listOf(SkyTop, SkyBottom)))
 }
@@ -565,10 +664,13 @@ private fun DrawScope.drawClouds(difficulty: Float) {
     val drift = (difficulty - 1f) * 18f
     drawCloud(Offset(size.width * 0.14f - drift, size.height * 0.16f), 34f)
     drawCloud(Offset(size.width * 0.72f - drift * 0.6f, size.height * 0.28f), 28f)
+    drawCloud(Offset(size.width * 0.43f - drift * 0.35f, size.height * 0.08f), 20f, 0.48f)
+    drawCloud(Offset(size.width * 0.91f - drift * 0.8f, size.height * 0.48f), 24f, 0.55f)
+    drawCloud(Offset(size.width * 0.27f - drift * 0.5f, size.height * 0.58f), 17f, 0.38f)
 }
 
-private fun DrawScope.drawCloud(center: Offset, radius: Float) {
-    val color = Color.White.copy(alpha = 0.7f)
+private fun DrawScope.drawCloud(center: Offset, radius: Float, alpha: Float = 0.7f) {
+    val color = Color.White.copy(alpha = alpha)
     drawCircle(color, radius, center)
     drawCircle(color, radius * 0.75f, center + Offset(radius, radius * 0.15f))
     drawCircle(color, radius * 0.62f, center - Offset(radius * 0.85f, -radius * 0.2f))
@@ -580,7 +682,7 @@ private fun DrawScope.drawCloud(center: Offset, radius: Float) {
     )
 }
 
-private fun DrawScope.drawGrassPlatform(platform: PlatformState) {
+private fun DrawScope.drawGrassPlatform(platform: PlatformState, roundAge: Float = 0f) {
     val visibleWidth = min(platform.width, size.width - platform.x)
     if (visibleWidth <= 0f || platform.x >= size.width) return
     val topLeft = Offset(platform.x, platform.y)
@@ -597,14 +699,17 @@ private fun DrawScope.drawGrassPlatform(platform: PlatformState) {
         cornerRadius = CornerRadius(10f)
     )
     var bladeX = platform.x + 8f
+    var bladeIndex = 0
     while (bladeX < platform.x + platform.width - 5f) {
+        val sway = sin(roundAge * 3.5f + bladeIndex * 0.8f) * 2.2f
         drawLine(
             color = DeepGreen.copy(alpha = 0.7f),
             start = Offset(bladeX, platform.y + 2f),
-            end = Offset(bladeX + 4f, platform.y - 7f),
+            end = Offset(bladeX + 4f + sway, platform.y - 7f),
             strokeWidth = 2f
         )
         bladeX += 15f
+        bladeIndex++
     }
     drawLine(
         color = Color(0xFFB97843).copy(alpha = 0.8f),
@@ -612,6 +717,154 @@ private fun DrawScope.drawGrassPlatform(platform: PlatformState) {
         end = Offset(platform.x + platform.width - 12f, platform.y + 17f),
         strokeWidth = 3f
     )
+}
+
+private fun DrawScope.drawBirdObstacle(bird: PlatformState, roundAge: Float) {
+    if (bird.x + bird.width < 0f || bird.x > size.width) return
+    val flap = sin(roundAge * 12f + bird.id) * bird.height * 0.23f
+    val center = Offset(bird.x + bird.width / 2f, bird.y + bird.height / 2f)
+    val bodyColor = Color(0xFF5B4BC4)
+    val wingColor = Color(0xFF8B7DE5)
+    drawOval(
+        color = bodyColor,
+        topLeft = Offset(bird.x + bird.width * 0.18f, bird.y + bird.height * 0.18f),
+        size = Size(bird.width * 0.66f, bird.height * 0.64f)
+    )
+    val leftWing = Path().apply {
+        moveTo(center.x - bird.width * 0.08f, center.y)
+        quadraticTo(
+            bird.x + bird.width * 0.08f,
+            bird.y - flap,
+            bird.x + bird.width * 0.04f,
+            bird.y + bird.height * 0.12f
+        )
+        quadraticTo(
+            bird.x + bird.width * 0.25f,
+            bird.y + bird.height * 0.35f,
+            center.x - bird.width * 0.08f,
+            center.y
+        )
+        close()
+    }
+    val rightWing = Path().apply {
+        moveTo(center.x + bird.width * 0.08f, center.y)
+        quadraticTo(
+            bird.x + bird.width * 0.92f,
+            bird.y + flap,
+            bird.x + bird.width * 0.96f,
+            bird.y + bird.height * 0.12f
+        )
+        quadraticTo(
+            bird.x + bird.width * 0.75f,
+            bird.y + bird.height * 0.35f,
+            center.x + bird.width * 0.08f,
+            center.y
+        )
+        close()
+    }
+    drawPath(leftWing, wingColor)
+    drawPath(rightWing, wingColor)
+    drawCircle(Color.White, bird.height * 0.12f, center + Offset(bird.width * 0.18f, -bird.height * 0.12f))
+    drawCircle(Ink, bird.height * 0.055f, center + Offset(bird.width * 0.2f, -bird.height * 0.12f))
+    val beak = Path().apply {
+        moveTo(bird.x + bird.width * 0.84f, center.y)
+        lineTo(bird.x + bird.width, center.y + bird.height * 0.1f)
+        lineTo(bird.x + bird.width * 0.84f, center.y + bird.height * 0.18f)
+        close()
+    }
+    drawPath(beak, Color(0xFFFFC857))
+}
+
+private fun DrawScope.drawBeeObstacle(bee: PlatformState, roundAge: Float) {
+    if (bee.x + bee.width < 0f || bee.x > size.width) return
+    val bob = sin(roundAge * 9f + bee.id) * bee.height * 0.08f
+    val center = Offset(bee.x + bee.width / 2f, bee.y + bee.height / 2f + bob)
+    val wingLift = sin(roundAge * 22f + bee.id) * bee.height * 0.12f
+    drawOval(
+        Color.White.copy(alpha = 0.78f),
+        center - Offset(bee.width * 0.28f, bee.height * 0.48f + wingLift),
+        Size(bee.width * 0.32f, bee.height * 0.46f)
+    )
+    drawOval(
+        Color.White.copy(alpha = 0.78f),
+        center + Offset(bee.width * 0.02f, -bee.height * 0.48f - wingLift),
+        Size(bee.width * 0.32f, bee.height * 0.46f)
+    )
+    drawOval(
+        Color(0xFFFFC928),
+        center - Offset(bee.width * 0.34f, bee.height * 0.24f),
+        Size(bee.width * 0.68f, bee.height * 0.48f)
+    )
+    repeat(3) { stripe ->
+        drawLine(
+            Ink,
+            Offset(center.x - bee.width * 0.14f + stripe * bee.width * 0.14f, center.y - bee.height * 0.2f),
+            Offset(center.x - bee.width * 0.14f + stripe * bee.width * 0.14f, center.y + bee.height * 0.2f),
+            bee.width * 0.06f,
+            StrokeCap.Round
+        )
+    }
+    drawCircle(Ink, bee.height * 0.055f, center + Offset(bee.width * 0.22f, -bee.height * 0.07f))
+}
+
+private fun DrawScope.drawBatObstacle(bat: PlatformState, roundAge: Float) {
+    if (bat.x + bat.width < 0f || bat.x > size.width) return
+    val center = Offset(bat.x + bat.width / 2f, bat.y + bat.height / 2f)
+    val flap = sin(roundAge * 11f + bat.id) * bat.height * 0.28f
+    val wingColor = Color(0xFF513A79)
+    val leftWing = Path().apply {
+        moveTo(center.x, center.y)
+        cubicTo(
+            bat.x + bat.width * 0.3f, bat.y + flap,
+            bat.x + bat.width * 0.08f, bat.y + bat.height * 0.12f,
+            bat.x, bat.y + bat.height * 0.55f
+        )
+        quadraticTo(bat.x + bat.width * 0.24f, bat.y + bat.height * 0.42f, center.x, center.y)
+        close()
+    }
+    val rightWing = Path().apply {
+        moveTo(center.x, center.y)
+        cubicTo(
+            bat.x + bat.width * 0.7f, bat.y - flap,
+            bat.x + bat.width * 0.92f, bat.y + bat.height * 0.12f,
+            bat.x + bat.width, bat.y + bat.height * 0.55f
+        )
+        quadraticTo(bat.x + bat.width * 0.76f, bat.y + bat.height * 0.42f, center.x, center.y)
+        close()
+    }
+    drawPath(leftWing, wingColor)
+    drawPath(rightWing, wingColor)
+    drawOval(
+        Color(0xFF34244F),
+        center - Offset(bat.width * 0.14f, bat.height * 0.28f),
+        Size(bat.width * 0.28f, bat.height * 0.56f)
+    )
+    drawCircle(Color(0xFFFFD166), bat.height * 0.045f, center + Offset(-bat.width * 0.05f, -bat.height * 0.08f))
+    drawCircle(Color(0xFFFFD166), bat.height * 0.045f, center + Offset(bat.width * 0.05f, -bat.height * 0.08f))
+}
+
+private fun DrawScope.drawFireflyObstacle(firefly: PlatformState, roundAge: Float) {
+    if (firefly.x + firefly.width < 0f || firefly.x > size.width) return
+    val pulse = 0.65f + sin(roundAge * 7f + firefly.id) * 0.25f
+    val center = Offset(
+        firefly.x + firefly.width / 2f,
+        firefly.y + firefly.height / 2f + sin(roundAge * 5f + firefly.id) * firefly.height * 0.12f
+    )
+    drawCircle(Color(0xFFFFF176).copy(alpha = 0.12f * pulse), firefly.width * 0.7f, center)
+    drawCircle(Color(0xFFFFE04B).copy(alpha = 0.3f * pulse), firefly.width * 0.45f, center)
+    drawOval(
+        Color(0xFF213A3A),
+        center - Offset(firefly.width * 0.22f, firefly.height * 0.24f),
+        Size(firefly.width * 0.44f, firefly.height * 0.48f)
+    )
+    drawOval(
+        Color(0xFFFFF176),
+        center + Offset(-firefly.width * 0.16f, firefly.height * 0.03f),
+        Size(firefly.width * 0.32f, firefly.height * 0.23f)
+    )
+    val wing = Color(0xFFD8F8FF).copy(alpha = 0.72f)
+    drawOval(wing, center + Offset(-firefly.width * 0.38f, -firefly.height * 0.28f), Size(firefly.width * 0.32f, firefly.height * 0.34f))
+    drawOval(wing, center + Offset(firefly.width * 0.06f, -firefly.height * 0.28f), Size(firefly.width * 0.32f, firefly.height * 0.34f))
 }
 
 @Composable
@@ -631,7 +884,7 @@ private fun GameOverOverlay(
     onMenu: () -> Unit
 ) {
     CenterOverlay("GAME OVER", "Score  $score     Best  $highScore") {
-        PrimaryButton("HOP AGAIN", onRestart)
+        PrimaryButton("TRY AGAIN", onRestart)
         Spacer(Modifier.height(8.dp))
         SecondaryButton("MAIN MENU", onMenu)
     }
@@ -686,7 +939,8 @@ private fun ScenicBackground(content: @Composable BoxScope.() -> Unit) {
                     y = size.height * 0.91f,
                     width = size.width + 40f,
                     height = size.height * 0.12f
-                )
+                ),
+                roundAge = 0f
             )
         }
         content()
@@ -708,11 +962,36 @@ private fun rememberFrogBitmap(): ImageBitmap {
 private fun PrimaryButton(text: String, onClick: () -> Unit) {
     Button(
         onClick = onClick,
-        modifier = Modifier.fillMaxWidth().height(56.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(58.dp),
         colors = ButtonDefaults.buttonColors(containerColor = DeepGreen, contentColor = Color.White),
-        shape = RoundedCornerShape(18.dp)
+        shape = RoundedCornerShape(22.dp),
+        elevation = ButtonDefaults.buttonElevation(
+            defaultElevation = 8.dp,
+            pressedElevation = 2.dp,
+            focusedElevation = 8.dp,
+            hoveredElevation = 10.dp
+        )
     ) {
         Text(text, fontSize = 18.sp, fontWeight = FontWeight.Black)
+    }
+}
+
+@Composable
+private fun MenuTextButton(text: String, onClick: () -> Unit, color: Color = Ink) {
+    TextButton(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth().height(46.dp),
+        shape = RoundedCornerShape(18.dp)
+    ) {
+        Text(
+            text = text,
+            color = color,
+            fontSize = 15.sp,
+            fontWeight = FontWeight.Black,
+            letterSpacing = 0.8.sp
+        )
     }
 }
 
@@ -728,16 +1007,40 @@ private fun SecondaryButton(text: String, onClick: () -> Unit) {
 }
 
 @Composable
-private fun PillButton(text: String, onClick: () -> Unit) {
-    Button(
-        onClick = onClick,
-        colors = ButtonDefaults.buttonColors(
-            containerColor = Color.White.copy(alpha = 0.82f),
-            contentColor = Ink
-        ),
-        shape = RoundedCornerShape(50)
+private fun SoundToggle(checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
+    val haptic = LocalHapticFeedback.current
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(22.dp))
+            .background(Color.White.copy(alpha = 0.78f))
+            .padding(start = 13.dp, end = 7.dp, top = 4.dp, bottom = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        Text(text, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        Column(horizontalAlignment = Alignment.End) {
+            Text("SOUND", color = Ink.copy(alpha = 0.62f), fontSize = 9.sp, fontWeight = FontWeight.Bold)
+            Text(
+                if (checked) "ON" else "OFF",
+                color = if (checked) DeepGreen else Color(0xFFC43C4D),
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Black
+            )
+        }
+        Switch(
+            checked = checked,
+            onCheckedChange = {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                onCheckedChange(it)
+            },
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = Color.White,
+                checkedTrackColor = Color(0xFF2DAA61),
+                checkedBorderColor = Color.Transparent,
+                uncheckedThumbColor = Color.White,
+                uncheckedTrackColor = Color(0xFFD64B5F),
+                uncheckedBorderColor = Color.Transparent
+            )
+        )
     }
 }
 
@@ -753,13 +1056,6 @@ private fun BannerPanel(activity: MainActivity?) {
                 AdView(context).apply {
                     setAdSize(AdSize.BANNER)
                     adUnitId = activity.bannerAdUnitId
-                    adListener = object : com.google.android.gms.ads.AdListener() {
-                        override fun onAdLoaded() {
-                        }
-
-                        override fun onAdFailedToLoad(error: LoadAdError) {
-                        }
-                    }
                     loadAd(AdRequest.Builder().build())
                 }
             },
