@@ -1,6 +1,7 @@
 package com.aliaygor.taptoflip
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.AudioManager
 import android.media.ToneGenerator
@@ -106,13 +107,12 @@ private val Lime = Color(0xFFA9E34B)
 private val Earth = Color(0xFF8D542E)
 private val Cream = Color(0xFFFFF7D6)
 private val Ink = Color(0xFF16324A)
+private const val ADMOB_BANNER_AD_UNIT_ID = "ca-app-pub-5287725227601079/1395452429"
+private const val ADMOB_INTERSTITIAL_AD_UNIT_ID = "ca-app-pub-5287725227601079/3135360764"
 
 class MainActivity : ComponentActivity() {
     private var interstitialAd: InterstitialAd? = null
     private var gameOverCount = 0
-
-    val bannerAdUnitId = "ca-app-pub-5287725227601079/1395452429"
-    private val interstitialAdUnitId = "ca-app-pub-5287725227601079/3135360764"
 
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
@@ -133,7 +133,7 @@ class MainActivity : ComponentActivity() {
     private fun loadInterstitial() {
         InterstitialAd.load(
             this,
-            interstitialAdUnitId,
+            ADMOB_INTERSTITIAL_AD_UNIT_ID,
             AdRequest.Builder().build(),
             object : InterstitialAdLoadCallback() {
                 override fun onAdLoaded(ad: InterstitialAd) {
@@ -954,7 +954,8 @@ private fun rememberFrogBitmap(): ImageBitmap {
         val options = BitmapFactory.Options().apply {
             inScaled = false
         }
-        BitmapFactory.decodeResource(resources, R.drawable.player, options).asImageBitmap()
+        (BitmapFactory.decodeResource(resources, R.drawable.player, options)
+            ?: Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)).asImageBitmap()
     }
 }
 
@@ -1055,11 +1056,12 @@ private fun BannerPanel(activity: MainActivity?) {
             factory = { context ->
                 AdView(context).apply {
                     setAdSize(AdSize.BANNER)
-                    adUnitId = activity.bannerAdUnitId
+                    adUnitId = ADMOB_BANNER_AD_UNIT_ID
                     loadAd(AdRequest.Builder().build())
                 }
             },
-            modifier = Modifier.fillMaxWidth().height(50.dp)
+            modifier = Modifier.fillMaxWidth().height(50.dp),
+            onRelease = { adView -> adView.destroy() }
         )
     }
 }

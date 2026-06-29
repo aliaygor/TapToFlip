@@ -45,9 +45,6 @@ android {
         compose = true
     }
 
-    composeOptions {
-        kotlinCompilerExtensionVersion = "1.5.3" // güncel versiyona göre
-    }
 }
 
 dependencies {
@@ -69,12 +66,6 @@ dependencies {
 
     debugImplementation(libs.androidx.ui.tooling)
     debugImplementation(libs.androidx.ui.test.manifest)
-
-    implementation(libs.androidx.activity.compose.v190)
-    implementation(libs.ui)
-    implementation(libs.ui.tooling)
-    implementation(libs.androidx.foundation)
-    implementation(libs.material3)
 
     // AdMob
     implementation(libs.play.services.ads)
