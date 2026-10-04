@@ -7,6 +7,57 @@ import kotlin.math.abs
 import kotlin.random.Random
 
 class GameEngineTest {
+    @Test fun phoneResolutionKeepsOriginalFrogSizeLimit() {
+        val engine = GameEngine().apply { resize(1080f, 2100f) }
+        assertEquals(88f, engine.player.size, 0.01f)
+    }
+
+    @Test fun hudHeightChangesDoNotPauseRun() {
+        val engine = engine()
+        engine.setScoreForTest(123)
+        engine.resize(400f, 680f)
+        assertEquals(GameStatus.RUNNING, engine.state)
+        assertEquals(123, engine.score)
+        engine.pause()
+        engine.resize(400f, 700f)
+        assertEquals(GameStatus.PAUSED, engine.state)
+    }
+
+    @Test fun resizingPreservesRunAndPausesBeforeContinuing() {
+        val engine = engine()
+        engine.setScoreForTest(123)
+        engine.jump()
+        val playerY = engine.player.y
+        val velocity = engine.player.velocityY
+        val obstacle = engine.platforms.first().copy()
+        engine.resize(800f, 350f)
+        assertEquals(GameStatus.PAUSED, engine.state)
+        assertEquals(123, engine.score)
+        assertEquals(playerY / 2f, engine.player.y, 0.01f)
+        assertEquals(velocity / 2f, engine.player.velocityY, 0.01f)
+        assertEquals(obstacle.x * 2f, engine.platforms.first().x, 0.01f)
+        assertEquals(obstacle.y / 2f, engine.platforms.first().y, 0.01f)
+        engine.resume()
+        engine.jump()
+        val before = engine.player.y
+        engine.update(0.03f)
+        assertTrue(engine.player.y < before)
+        assertEquals(GameStatus.RUNNING, engine.state)
+        engine.resize(800f, 350f)
+        assertEquals(GameStatus.RUNNING, engine.state)
+    }
+
+    @Test fun jumpUsesSameRelativeHeightInLandscapeAndPortrait() {
+        fun relativeRise(width: Float, height: Float): Float {
+            val engine = GameEngine().apply { resize(width, height); replacePlatformsForTest(emptyList()) }
+            val start = engine.player.y
+            engine.jump()
+            engine.update(0.03f)
+            return (start - engine.player.y) / height
+        }
+        assertEquals(relativeRise(400f, 700f), relativeRise(900f, 300f), 0.0001f)
+    }
+
     @Test
     fun resetCreatesObstaclesAwayFromFrog() {
         val engine = engine()

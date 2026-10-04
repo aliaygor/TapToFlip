@@ -18,9 +18,9 @@ data class PlayerState(
 data class PlatformState(
     val id: Int,
     var x: Float,
-    val y: Float,
-    val width: Float,
-    val height: Float,
+    var y: Float,
+    var width: Float,
+    var height: Float,
     val type: ObstacleType = ObstacleType.GRASS
 )
 
@@ -58,10 +58,26 @@ class GameEngine(
 
     fun resize(width: Float, height: Float) {
         if (width <= 0f || height <= 0f) return
+        if (initialized && width == worldWidth && height == worldHeight) return
         val firstLayout = !initialized
+        if (!firstLayout) {
+            val orientationChanged = (width > height) != (worldWidth > worldHeight)
+            val scaleX = width / worldWidth
+            val scaleY = height / worldHeight
+            player.y *= scaleY
+            player.velocityY *= scaleY
+            platforms.forEach {
+                it.x *= scaleX
+                it.y *= scaleY
+                it.width *= scaleX
+                it.height *= scaleY
+            }
+            // Only rotation pauses the run; HUD/inset relayouts must keep playing.
+            if (orientationChanged) pause()
+        }
         worldWidth = width
         worldHeight = height
-        player.size = (width * 0.17f).coerceIn(62f, 88f)
+        player.size = minOf(width * 0.17f, height * 0.12f, 88f)
         player.x = width * 0.2f
         if (firstLayout) {
             initialized = true
@@ -71,7 +87,7 @@ class GameEngine(
 
     fun jump() {
         if (state != GameStatus.RUNNING) return
-        player.velocityY = jumpVelocity
+        player.velocityY = jumpVelocity * worldHeight / 700f
         jumpFeedback = 1f
     }
 
@@ -115,9 +131,9 @@ class GameEngine(
         roundAge += dt
         jumpFeedback = (jumpFeedback - dt * 4.5f).coerceAtLeast(0f)
         difficulty = 1f + ln(1f + score / 70f) * 0.65f
-        val scroll = baseScrollSpeed * difficulty * dt
+        val scroll = baseScrollSpeed * (worldWidth / 400f) * difficulty * dt
 
-        player.velocityY += gravity * dt
+        player.velocityY += gravity * (worldHeight / 700f) * dt
         player.y += player.velocityY * dt
         platforms.forEach { it.x -= scroll }
 

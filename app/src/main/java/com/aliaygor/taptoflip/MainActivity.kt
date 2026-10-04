@@ -1,5 +1,18 @@
 package com.aliaygor.taptoflip
 
+import android.Manifest
+import android.os.Build
+import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import android.content.Intent
+import androidx.activity.enableEdgeToEdge
+import androidx.activity.SystemBarStyle
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.layout.widthIn
 import android.content.Context
 import android.graphics.BitmapFactory
 import android.media.AudioManager
@@ -16,6 +29,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -43,6 +57,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.IntState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -110,6 +125,7 @@ private val Ink = Color(0xFF16324A)
 class MainActivity : ComponentActivity() {
     private var interstitialAd: InterstitialAd? = null
     private var gameOverCount = 0
+    private var lastInterstitialAt = android.os.SystemClock.elapsedRealtime()
 
     val bannerAdUnitId = "ca-app-pub-5287725227601079/1395452429"
     private val interstitialAdUnitId = "ca-app-pub-5287725227601079/3135360764"
@@ -117,6 +133,10 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+        )
         setContent {
             TapToFlipTheme {
                 GameApp()
@@ -128,6 +148,17 @@ class MainActivity : ComponentActivity() {
                 loadInterstitial()
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        GameReminders(this).visit()
+    }
+
+    override fun onPause() {
+        getSharedPreferences("tap_to_flip", Context.MODE_PRIVATE).edit()
+            .putLong("last_active", System.currentTimeMillis()).apply()
+        super.onPause()
     }
 
     private fun loadInterstitial() {
@@ -149,12 +180,14 @@ class MainActivity : ComponentActivity() {
 
     fun showInterstitial() {
         gameOverCount++
-        if (gameOverCount % 3 != 0) return
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (gameOverCount % 5 != 0 || now - lastInterstitialAt < 120_000L) return
         interstitialAd?.apply {
             fullScreenContentCallback = object : FullScreenContentCallback() {
                 override fun onAdDismissedFullScreenContent() = loadInterstitial()
                 override fun onAdFailedToShowFullScreenContent(error: AdError) = loadInterstitial()
                 override fun onAdShowedFullScreenContent() {
+                    lastInterstitialAt = android.os.SystemClock.elapsedRealtime()
                     interstitialAd = null
                 }
             }
@@ -185,18 +218,56 @@ private class GameAudio {
 
 @Composable
 private fun GameApp() {
-    val activity = LocalActivity.current
+    val activity = LocalActivity.current as? MainActivity
     var screen by remember { mutableStateOf(AppScreen.MENU) }
-    var soundEnabled by remember { mutableStateOf(true) }
+    val context = LocalContext.current
+    val progress = remember { PlayerProgress(context) }
+    var soundEnabled by remember { mutableStateOf(progress.soundEnabled) }
+    val reminders = remember { GameReminders(context) }
+    var remindersEnabled by remember { mutableStateOf(reminders.enabled) }
+    var notificationBlocked by remember { mutableStateOf(reminders.enabled && !reminders.allowed()) }
+    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        reminders.setEnabled(granted)
+        remindersEnabled = granted
+        notificationBlocked = !granted || !reminders.allowed()
+    }
+    DisposableEffect(activity) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                remindersEnabled = reminders.enabled
+                notificationBlocked = reminders.enabled && !reminders.allowed()
+            }
+        }
+        activity?.lifecycle?.addObserver(observer)
+        onDispose { activity?.lifecycle?.removeObserver(observer) }
+    }
+    BackHandler(screen == AppScreen.HOW_TO_PLAY) { screen = AppScreen.MENU }
 
-    Surface(modifier = Modifier.fillMaxSize(), color = SkyBottom) {
+    Surface(modifier = Modifier.fillMaxSize().background(Color(0xFF0B1721)).safeDrawingPadding(), color = SkyBottom) {
         when (screen) {
-            AppScreen.MENU -> MenuScreen(
+            AppScreen.MENU -> HomeScreen(
+                frog = rememberFrogBitmap(),
+                remindersEnabled = remindersEnabled,
+                notificationBlocked = notificationBlocked,
+                onToggleReminders = { enabled ->
+                    if (enabled && Build.VERSION.SDK_INT >= 33 && !reminders.allowed()) {
+                        permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    } else {
+                        reminders.setEnabled(enabled)
+                        remindersEnabled = enabled
+                        notificationBlocked = enabled && !reminders.allowed()
+                    }
+                },
+                onNotificationSettings = {
+                    val intent = if (Build.VERSION.SDK_INT >= 26) Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                        else Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.parse("package:${context.packageName}"))
+                    context.startActivity(intent)
+                },
                 soundEnabled = soundEnabled,
-                onToggleSound = { soundEnabled = it },
+                progress = progress,
+                onToggleSound = { soundEnabled = it; progress.soundEnabled = it },
                 onStart = { screen = AppScreen.GAME },
-                onHowToPlay = { screen = AppScreen.HOW_TO_PLAY },
-                onExit = { activity?.finish() }
+                onHowToPlay = { screen = AppScreen.HOW_TO_PLAY }
             )
 
             AppScreen.HOW_TO_PLAY -> HowToPlayScreen(
@@ -213,65 +284,6 @@ private fun GameApp() {
 }
 
 @Composable
-private fun MenuScreen(
-    soundEnabled: Boolean,
-    onToggleSound: (Boolean) -> Unit,
-    onStart: () -> Unit,
-    onHowToPlay: () -> Unit,
-    onExit: () -> Unit
-) {
-    val frog = rememberFrogBitmap()
-    ScenicBackground {
-        Column(
-            modifier = Modifier.fillMaxSize().padding(horizontal = 28.dp, vertical = 26.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                SoundToggle(soundEnabled, onToggleSound)
-            }
-            Spacer(Modifier.weight(0.25f))
-            Text(
-                text = "TAP TO",
-                color = Color.White,
-                fontSize = 38.sp,
-                lineHeight = 38.sp,
-                fontWeight = FontWeight.Black,
-                style = MaterialTheme.typography.headlineLarge
-            )
-            Text(
-                text = "FLIP",
-                color = Lime,
-                fontSize = 66.sp,
-                lineHeight = 62.sp,
-                fontWeight = FontWeight.Black
-            )
-            Text(
-                text = "Tap. Dodge. Keep going.",
-                color = Ink.copy(alpha = 0.82f),
-                fontSize = 16.sp,
-                fontWeight = FontWeight.SemiBold
-            )
-            Image(
-                bitmap = frog,
-                contentDescription = null,
-                modifier = Modifier.size(190.dp).padding(top = 6.dp),
-                contentScale = ContentScale.Fit
-            )
-            Spacer(Modifier.weight(0.45f))
-            Column(
-                modifier = Modifier.offset(y = (-74).dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                PrimaryButton("START", onStart)
-                Spacer(Modifier.height(6.dp))
-                MenuTextButton("HOW TO PLAY", onHowToPlay)
-                MenuTextButton("EXIT", onExit, color = Color(0xFF9A3D4D))
-            }
-        }
-    }
-}
-
-@Composable
 private fun HowToPlayScreen(onPlay: () -> Unit, onBack: () -> Unit) {
     ScenicBackground {
         Card(
@@ -281,7 +293,7 @@ private fun HowToPlayScreen(onPlay: () -> Unit, onBack: () -> Unit) {
             elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
         ) {
             Column(
-                modifier = Modifier.padding(26.dp),
+                modifier = Modifier.verticalScroll(rememberScrollState()).padding(26.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
@@ -331,31 +343,42 @@ private fun GameScreen(soundEnabled: Boolean, onExitToMenu: () -> Unit) {
     val preferences = remember {
         context.getSharedPreferences("tap_to_flip", Context.MODE_PRIVATE)
     }
+    val progress = remember { PlayerProgress(context) }
     val engine = remember { GameEngine() }
     val audio = remember { GameAudio() }
     val haptic = LocalHapticFeedback.current
     val frog = rememberFrogBitmap()
-    var frameVersion by remember { mutableIntStateOf(0) }
+    val frameClock = remember { mutableIntStateOf(0) }
+    var frameVersion by frameClock
     var highScore by remember { mutableIntStateOf(preferences.getInt("high_score", 0)) }
     var adShownForRound by remember { mutableStateOf(false) }
+    var roundBest by remember { mutableIntStateOf(highScore) }
+    val dailyTarget = remember { progress.dailyTarget }
+    BackHandler {
+        if (engine.state == GameStatus.RUNNING) { engine.pause(); frameVersion++ }
+        else onExitToMenu()
+    }
 
     DisposableEffect(activity) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_PAUSE) {
                 engine.pause()
+                preferences.edit().putInt("high_score", highScore).apply()
                 frameVersion++
             }
         }
         activity?.lifecycle?.addObserver(observer)
         onDispose {
             activity?.lifecycle?.removeObserver(observer)
+            preferences.edit().putInt("high_score", highScore).apply()
             audio.release()
         }
     }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(engine.state) {
+        if (engine.state != GameStatus.RUNNING) return@LaunchedEffect
         var lastFrame = 0L
-        while (true) {
+        while (engine.state == GameStatus.RUNNING) {
             withFrameNanos { now ->
                 if (lastFrame == 0L) lastFrame = now
                 val dt = ((now - lastFrame) / 1_000_000_000f).coerceAtMost(0.033f)
@@ -365,30 +388,42 @@ private fun GameScreen(soundEnabled: Boolean, onExitToMenu: () -> Unit) {
 
                 if (engine.score > highScore) {
                     highScore = engine.score
-                    preferences.edit().putInt("high_score", highScore).apply()
                 }
                 if (previousState != GameStatus.GAME_OVER && engine.state == GameStatus.GAME_OVER) {
+                    progress.record(engine.score)
                     if (soundEnabled) audio.gameOver()
                     if (!adShownForRound) {
                         activity?.showInterstitial()
                         adShownForRound = true
                     }
                 }
-                frameVersion++
+                if (previousState == GameStatus.RUNNING) frameVersion++
             }
         }
     }
 
+    // The HUD and goal text must refresh even when this run is below the saved best.
+    frameVersion
     Column(modifier = Modifier.fillMaxSize().background(Ink)) {
         ScoreBar(engine.score, highScore, engine.difficulty, onExitToMenu) {
             engine.pause()
             frameVersion++
         }
+        Text(
+            if (engine.score > roundBest && roundBest > 0) "Personal best beaten! Keep going."
+            else if (roundBest > 0) "${maxOf(1, roundBest - engine.score + 1)} points to a new personal best"
+            else "First challenge: $dailyTarget points",
+            modifier = Modifier.fillMaxWidth().background(DeepGreen).padding(8.dp),
+            color = Color.White, fontSize = 12.sp, textAlign = TextAlign.Center
+        )
         Box(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth()
-                .onSizeChanged { engine.resize(it.width.toFloat(), it.height.toFloat()) }
+                .onSizeChanged {
+                    engine.resize(it.width.toFloat(), it.height.toFloat())
+                    frameVersion++
+                }
                 .pointerInput(engine.state, soundEnabled) {
                     detectTapGestures {
                         if (engine.state == GameStatus.RUNNING) {
@@ -404,10 +439,10 @@ private fun GameScreen(soundEnabled: Boolean, onExitToMenu: () -> Unit) {
                 }
         ) {
             frameVersion
-            GameplayCanvas(engine)
-            FrogSprite(engine, frog)
+            GameplayCanvas(engine, frameClock)
+            FrogSprite(engine, frog, frameClock)
             if (engine.state == GameStatus.RUNNING && engine.roundAge < 2.2f) {
-                TapHint(engine)
+                TapHint(engine, frameClock)
             }
 
             when (engine.state) {
@@ -422,7 +457,17 @@ private fun GameScreen(soundEnabled: Boolean, onExitToMenu: () -> Unit) {
                 GameStatus.GAME_OVER -> GameOverOverlay(
                     score = engine.score,
                     highScore = highScore,
+                    previousBest = roundBest,
+                    dailyTarget = dailyTarget,
+                    onShare = {
+                        val share = Intent(Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            putExtra(Intent.EXTRA_TEXT, "I scored ${engine.score} in Tap to Flip! Can you beat me? https://play.google.com/store/apps/details?id=com.aliaygor.taptoflip")
+                        }
+                        context.startActivity(Intent.createChooser(share, "Challenge a friend"))
+                    },
                     onRestart = {
+                        roundBest = highScore
                         engine.reset()
                         adShownForRound = false
                         frameVersion++
@@ -477,7 +522,11 @@ private fun ScoreChip(label: String, value: String, color: Color) {
 }
 
 @Composable
-private fun BoxScope.FrogSprite(engine: GameEngine, frog: ImageBitmap) {
+internal fun BoxScope.FrogSprite(engine: GameEngine, frog: ImageBitmap, frameClock: IntState) {
+    // Plain mutable engine fields require an observable frame before taking a render snapshot.
+    frameClock.intValue
+    val position = IntOffset(engine.player.x.roundToInt(), engine.player.y.roundToInt())
+    val visible = engine.state != GameStatus.GAME_OVER
     val density = LocalDensity.current
     val frogSize = with(density) { engine.player.size.toDp() }
     val stretch = 1f + engine.jumpFeedback * 0.12f
@@ -488,11 +537,11 @@ private fun BoxScope.FrogSprite(engine: GameEngine, frog: ImageBitmap) {
         contentScale = ContentScale.Fit,
         modifier = Modifier
             .offset {
-                IntOffset(engine.player.x.roundToInt(), engine.player.y.roundToInt())
+                position
             }
             .size(frogSize)
             .graphicsLayer {
-                alpha = if (engine.state == GameStatus.GAME_OVER) 0f else 1f
+                alpha = if (visible) 1f else 0f
                 scaleX = 1f / stretch
                 scaleY = stretch
                 rotationZ = rotation
@@ -502,7 +551,11 @@ private fun BoxScope.FrogSprite(engine: GameEngine, frog: ImageBitmap) {
 }
 
 @Composable
-private fun BoxScope.TapHint(engine: GameEngine) {
+private fun BoxScope.TapHint(engine: GameEngine, frameClock: IntState) {
+    frameClock.intValue
+    val playerX = engine.player.x
+    val playerY = engine.player.y
+    val playerSize = engine.player.size
     val density = LocalDensity.current
     val widthPx = with(density) { 112.dp.toPx() }
     val heightPx = with(density) { 54.dp.toPx() }
@@ -511,8 +564,8 @@ private fun BoxScope.TapHint(engine: GameEngine) {
         modifier = Modifier
             .offset {
                 IntOffset(
-                    x = (engine.player.x + engine.player.size / 2f - widthPx / 2f).roundToInt(),
-                    y = max(8f, engine.player.y - heightPx - 12f).roundToInt()
+                    x = (playerX + playerSize / 2f - widthPx / 2f).roundToInt(),
+                    y = max(8f, playerY - heightPx - 12f).roundToInt()
                 )
             }
             .graphicsLayer {
@@ -531,8 +584,10 @@ private fun BoxScope.TapHint(engine: GameEngine) {
 }
 
 @Composable
-private fun GameplayCanvas(engine: GameEngine) {
+private fun GameplayCanvas(engine: GameEngine, frameClock: IntState) {
     Canvas(modifier = Modifier.fillMaxSize()) {
+        // Observe in the draw phase so retained engine instances still redraw every frame.
+        frameClock.intValue
         drawSky()
         drawHills()
         drawClouds(engine.difficulty)
@@ -880,11 +935,22 @@ private fun PauseOverlay(onResume: () -> Unit, onMenu: () -> Unit) {
 private fun GameOverOverlay(
     score: Int,
     highScore: Int,
+    previousBest: Int,
+    dailyTarget: Int,
+    onShare: () -> Unit,
     onRestart: () -> Unit,
     onMenu: () -> Unit
 ) {
-    CenterOverlay("GAME OVER", "Score  $score     Best  $highScore") {
-        PrimaryButton("TRY AGAIN", onRestart)
+    CenterOverlay(if (score > previousBest) "NEW PERSONAL BEST!" else "NICE TRY!", "Score  $score     Best  $highScore") {
+        Text(if (score > previousBest) "You raised the bar. Ready to go higher?"
+            else "${previousBest - score + 1} more points to beat your record.",
+            color = DeepGreen, textAlign = TextAlign.Center, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(8.dp))
+        Text(if (score >= dailyTarget) "Daily goal reached!" else "Today's goal: $dailyTarget points",
+            color = Ink, fontSize = 13.sp)
+        Spacer(Modifier.height(16.dp))
+        PrimaryButton("ONE MORE TRY", onRestart)
+        MenuTextButton("CHALLENGE A FRIEND", onShare)
         Spacer(Modifier.height(8.dp))
         SecondaryButton("MAIN MENU", onMenu)
     }
@@ -896,29 +962,31 @@ private fun CenterOverlay(
     subtitle: String,
     actions: @Composable ColumnScope.() -> Unit
 ) {
-    Box(
+    BoxWithConstraints(
         modifier = Modifier.fillMaxSize().background(Ink.copy(alpha = 0.66f)),
         contentAlignment = Alignment.Center
     ) {
+        val compact = maxHeight < 300.dp
         Card(
-            modifier = Modifier.fillMaxWidth().padding(28.dp),
+            modifier = Modifier.widthIn(max = 480.dp).fillMaxWidth().padding(if (compact) 8.dp else 28.dp),
             colors = CardDefaults.cardColors(containerColor = Cream),
             shape = RoundedCornerShape(28.dp),
             elevation = CardDefaults.cardElevation(defaultElevation = 12.dp)
         ) {
             Column(
-                modifier = Modifier.padding(26.dp),
+                modifier = Modifier.verticalScroll(rememberScrollState()).padding(if (compact) 12.dp else 26.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
                     title,
                     color = DeepGreen,
-                    fontSize = 31.sp,
+                    fontSize = if (compact) 22.sp else 31.sp,
                     fontWeight = FontWeight.Black,
                     textAlign = TextAlign.Center
                 )
-                Text(subtitle, color = Ink.copy(alpha = 0.78f), fontWeight = FontWeight.SemiBold)
-                Spacer(Modifier.height(22.dp))
+                Text(subtitle, color = Ink.copy(alpha = 0.78f), fontWeight = FontWeight.SemiBold,
+                    fontSize = if (compact) 12.sp else 14.sp)
+                Spacer(Modifier.height(if (compact) 10.dp else 22.dp))
                 actions()
             }
         }

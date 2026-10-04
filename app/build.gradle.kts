@@ -6,14 +6,14 @@ plugins {
 
 android {
     namespace = "com.aliaygor.taptoflip"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.aliaygor.taptoflip"
         minSdk = 24
-        targetSdk = 35
-        versionCode = 2
-        versionName = "1.1"
+        targetSdk = 36
+        versionCode = 6
+        versionName = "1.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -45,9 +45,6 @@ android {
         compose = true
     }
 
-    composeOptions {
-        kotlinCompilerExtensionVersion = "1.5.3" // güncel versiyona göre
-    }
 }
 
 dependencies {
@@ -70,7 +67,6 @@ dependencies {
     debugImplementation(libs.androidx.ui.tooling)
     debugImplementation(libs.androidx.ui.test.manifest)
 
-    implementation(libs.androidx.activity.compose.v190)
     implementation(libs.ui)
     implementation(libs.ui.tooling)
     implementation(libs.androidx.foundation)
@@ -78,4 +74,7 @@ dependencies {
 
     // AdMob
     implementation(libs.play.services.ads)
+    implementation("androidx.work:work-runtime-ktx:2.10.1")
+    // AdMob otherwise brings Fragment 1.1.0 transitively.
+    implementation("androidx.fragment:fragment:1.9.1")
 }
