@@ -21,7 +21,13 @@ import java.util.concurrent.TimeUnit
 
 internal class GameReminders(private val context: Context) {
     private val prefs = context.getSharedPreferences("tap_to_flip", Context.MODE_PRIVATE)
-    val enabled: Boolean get() = prefs.getBoolean("reminders_enabled", false)
+    fun shouldRequestPermission(): Boolean =
+        !prefs.getBoolean("notification_permission_requested", false) &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+
+    fun markPermissionRequested() {
+        prefs.edit().putBoolean("notification_permission_requested", true).apply()
+    }
 
     fun allowed(): Boolean =
         (Build.VERSION.SDK_INT < 33 || ContextCompat.checkSelfPermission(context,
@@ -30,47 +36,45 @@ internal class GameReminders(private val context: Context) {
             (Build.VERSION.SDK_INT < 26 || context.getSystemService(NotificationManager::class.java)
                 .getNotificationChannel(CHANNEL)?.importance != NotificationManager.IMPORTANCE_NONE)
 
-    fun setEnabled(value: Boolean) {
-        prefs.edit().putBoolean("reminders_enabled", value).apply()
-        if (value) {
-            createChannel()
-            visit()
-        } else {
-            WorkManager.getInstance(context).cancelUniqueWork(WORK)
-            NotificationManagerCompat.from(context).cancel(NOTIFICATION)
-        }
-    }
-
     fun visit() {
-        prefs.edit().putLong("last_active", System.currentTimeMillis())
-            .putInt("reminders_since_visit", 0).apply()
+        val now = System.currentTimeMillis()
+        val edit = prefs.edit().putLong("last_active", now)
+        if (!prefs.contains("reminder_schedule_started")) edit.putLong("reminder_schedule_started", now)
+        edit.apply()
         NotificationManagerCompat.from(context).cancel(NOTIFICATION)
-        if (!enabled) return
         createChannel()
         val request = PeriodicWorkRequestBuilder<ReturnReminderWorker>(6, TimeUnit.HOURS)
-            .setInitialDelay(4, TimeUnit.DAYS).build()
+            .setInitialDelay(2, TimeUnit.DAYS).build()
         WorkManager.getInstance(context).enqueueUniquePeriodicWork(WORK,
-            ExistingPeriodicWorkPolicy.KEEP, request)
+            ExistingPeriodicWorkPolicy.UPDATE, request)
     }
 
     internal fun deliverIfDue(now: Long, hour: Int): Boolean {
-        if (!enabled) return false
         createChannel()
         if (!allowed()) return false
         val count = prefs.getInt("reminders_since_visit", 0)
-        if (!ReminderPolicy.shouldSend(now, prefs.getLong("last_active", 0),
-                prefs.getLong("last_reminder", 0), count, hour)) return false
+        if (!ReminderPolicy.shouldSend(now, prefs.getLong("reminder_schedule_started", 0),
+                prefs.getLong("last_reminder", 0), hour)) return false
         val best = prefs.getInt("high_score", 0)
         val intent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
         }
         val pending = PendingIntent.getActivity(context, 410, intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val text = if (best > 0) "Your best is $best. Got a new record in you?"
-            else "One tap, one little challenge. Ready for your first record?"
+        val text = when (count % 3) {
+            0 -> if (best > 0) "Your record is $best. Can you beat it today?"
+                else "Your first record is waiting. Ready for a little hop?"
+            1 -> "Got a minute? Tap, dodge, and try today's challenge."
+            else -> if (best > 0) "One more try at $best? Your next hop could be your best."
+                else "One tap is all it takes. How far can you go?"
+        }
         val notification = NotificationCompat.Builder(context, CHANNEL)
             .setSmallIcon(R.drawable.ic_launcher_monochrome)
-            .setContentTitle(if (count == 0) "A little hop?" else "Your next record is waiting")
+            .setContentTitle(when (count % 3) {
+                0 -> "Can you beat your best?"
+                1 -> "A quick Tap to Flip challenge?"
+                else -> "One more little hop?"
+            })
             .setContentText(text).setStyle(NotificationCompat.BigTextStyle().bigText(text))
             .setContentIntent(pending).setAutoCancel(true).setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_LOW).setSilent(true).build()
@@ -86,9 +90,9 @@ internal class GameReminders(private val context: Context) {
 
     private fun createChannel() {
         if (Build.VERSION.SDK_INT >= 26) {
-            val channel = NotificationChannel(CHANNEL, "Gentle game reminders",
+            val channel = NotificationChannel(CHANNEL, "Game reminders",
                 NotificationManager.IMPORTANCE_DEFAULT).apply {
-                description = "Occasional invitations after a few days away. Never daily."
+                description = "A reminder every two days, during daytime only."
                 setSound(null, null)
                 enableVibration(false)
             }

@@ -35,13 +35,10 @@ internal fun HomeScreen(
     frog: ImageBitmap,
     progress: PlayerProgress,
     soundEnabled: Boolean,
-    remindersEnabled: Boolean,
-    notificationBlocked: Boolean,
     onToggleSound: (Boolean) -> Unit,
-    onToggleReminders: (Boolean) -> Unit,
-    onNotificationSettings: () -> Unit,
     onStart: () -> Unit,
-    onHowToPlay: () -> Unit
+    onHowToPlay: () -> Unit,
+    onShare: () -> Unit
 ) {
     var showScores by remember { mutableStateOf(false) }
     val best = progress.best
@@ -122,28 +119,8 @@ internal fun HomeScreen(
                 HomeSecondary("HOW TO PLAY", Modifier.weight(1f), onHowToPlay)
                 HomeSecondary("MY RECORDS", Modifier.weight(1f)) { showScores = true }
             }
-            Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = Color.White.copy(alpha = 0.05f))) {
-                Column(Modifier.padding(16.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Column(Modifier.weight(1f)) {
-                            Text("A gentle nudge", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                            Text(if (notificationBlocked) "Notifications are blocked in Android settings."
-                                else "After a few days away. Never daily.", color = Muted, fontSize = 11.sp)
-                        }
-                        Switch(checked = remindersEnabled,
-                            onCheckedChange = onToggleReminders,
-                            modifier = Modifier.semantics { contentDescription = "Occasional game reminders" },
-                            colors = SwitchDefaults.colors(checkedTrackColor = Accent,
-                                checkedThumbColor = Night, uncheckedThumbColor = Muted,
-                                uncheckedTrackColor = Panel))
-                    }
-                    if (notificationBlocked) {
-                        TextButton(onClick = onNotificationSettings) { Text("OPEN SETTINGS", color = Accent, fontSize = 11.sp) }
-                    }
-                }
-            }
-            Text("NO ACCOUNT NEEDED  •  v1.2", color = Muted.copy(alpha = 0.65f), fontSize = 9.sp, letterSpacing = 1.sp)
+            HomeSecondary("CHALLENGE A FRIEND", Modifier.fillMaxWidth(), onShare)
+            Text("NO ACCOUNT NEEDED  •  v1.3", color = Muted.copy(alpha = 0.65f), fontSize = 9.sp, letterSpacing = 1.sp)
         }
     }
     if (showScores) {

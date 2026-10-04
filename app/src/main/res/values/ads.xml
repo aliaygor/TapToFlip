@@ -1,0 +1,4 @@
+<resources>
+    <!-- TapToFlip rewarded ad unit: one continue per run. Debug uses Google test ads. -->
+    <string name="rewarded_ad_unit_id" translatable="false">ca-app-pub-5287725227601079/4442460771</string>
+</resources>

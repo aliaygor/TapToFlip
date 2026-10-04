@@ -26,9 +26,9 @@ data class PlatformState(
 
 class GameEngine(
     private val random: Random = Random.Default,
-    private val gravity: Float = 1750f,
-    private val jumpVelocity: Float = -690f,
-    private val baseScrollSpeed: Float = 245f
+    private val gravity: Float = 980f,
+    private val jumpVelocity: Float = -510f,
+    private val baseScrollSpeed: Float = 170f
 ) {
     var worldWidth = 0f
         private set
@@ -48,6 +48,23 @@ class GameEngine(
         private set
     var roundAge = 0f
         private set
+    var reviveUsed = false
+        private set
+    var protectionSeconds = 0f
+        private set
+
+    fun reviveAfterReward(): Boolean {
+        if (state != GameStatus.GAME_OVER || reviveUsed) return false
+        reviveUsed = true
+        player.y = worldHeight * 0.48f
+        player.velocityY = 0f
+        platforms.removeAll { it.x < player.x + player.size * 3f && it.x + it.width > player.x - player.size }
+        protectionSeconds = 3f
+        crashFeedback = 0f
+        jumpFeedback = 0f
+        state = GameStatus.RUNNING
+        return true
+    }
 
     val player = PlayerState()
     val platforms = mutableListOf<PlatformState>()
@@ -108,6 +125,8 @@ class GameEngine(
         crashFeedback = 0f
         scoreEvent = 0
         roundAge = 0f
+        reviveUsed = false
+        protectionSeconds = 0f
         elapsedScore = 0f
         nextPlatformId = 1
         platforms.clear()
@@ -135,6 +154,9 @@ class GameEngine(
 
         player.velocityY += gravity * (worldHeight / 700f) * dt
         player.y += player.velocityY * dt
+        val protected = protectionSeconds > 0f
+        protectionSeconds = (protectionSeconds - dt).coerceAtLeast(0f)
+        if (protected) player.y = player.y.coerceIn(0f, (worldHeight - player.size).coerceAtLeast(0f))
         platforms.forEach { it.x -= scroll }
 
         elapsedScore += dt * 10f
@@ -144,7 +166,7 @@ class GameEngine(
             scoreEvent = score / 10
         }
 
-        if (touchesWorldEdge() || platforms.any(::collidesWithPlayer)) {
+        if (!protected && (touchesWorldEdge() || platforms.any(::collidesWithPlayer))) {
             state = GameStatus.GAME_OVER
             crashFeedback = 1f
             return

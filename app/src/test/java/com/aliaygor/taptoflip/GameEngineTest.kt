@@ -2,11 +2,60 @@ package com.aliaygor.taptoflip
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertFalse
 import org.junit.Test
 import kotlin.math.abs
 import kotlin.random.Random
 
 class GameEngineTest {
+    @Test fun rewardedContinueKeepsScoreAndIsAvailableOnlyOnce() {
+        val engine = engine(gravity = 0f)
+        engine.setScoreForTest(123)
+        engine.setPlayerForTest(engine.worldHeight)
+        engine.update(0.01f)
+        assertEquals(GameStatus.GAME_OVER, engine.state)
+        assertTrue(engine.reviveAfterReward())
+        assertEquals(123, engine.score)
+        assertEquals(3f, engine.protectionSeconds, 0.01f)
+        assertFalse(engine.reviveAfterReward())
+        repeat(101) { engine.update(0.03f) }
+        engine.setPlayerForTest(engine.worldHeight)
+        engine.update(0.01f)
+        assertEquals(GameStatus.GAME_OVER, engine.state)
+        assertFalse(engine.reviveAfterReward())
+        engine.reset()
+        assertFalse(engine.reviveUsed)
+        assertEquals(0f, engine.protectionSeconds, 0f)
+    }
+
+    @Test fun shieldPreventsImmediateRepeatDeathAndExpires() {
+        val engine = engine(gravity = 0f)
+        engine.setPlayerForTest(engine.worldHeight)
+        engine.update(0.01f)
+        assertTrue(engine.reviveAfterReward())
+        engine.setPlayerForTest(engine.worldHeight)
+        engine.update(0.03f)
+        assertEquals(GameStatus.RUNNING, engine.state)
+        assertTrue(engine.player.y + engine.player.size <= engine.worldHeight)
+        engine.pause()
+        engine.update(0.03f)
+        assertEquals(2.97f, engine.protectionSeconds, 0.01f)
+    }
+    @Test fun beginnerHasTimeToReactBeforeFirstFall() {
+        val engine = GameEngine().apply { resize(400f, 700f); replacePlatformsForTest(emptyList()) }
+        repeat(25) { engine.update(0.03f) }
+        assertEquals(GameStatus.RUNNING, engine.state)
+    }
+
+    @Test fun beginnerJumpAndObstaclesMoveMoreGently() {
+        val engine = GameEngine().apply { resize(400f, 700f) }
+        engine.jump()
+        assertTrue(abs(engine.player.velocityY) < 550f)
+        val obstacleX = engine.platforms.first().x
+        engine.update(0.03f)
+        assertTrue(obstacleX - engine.platforms.first().x < 6f)
+    }
+
     @Test fun phoneResolutionKeepsOriginalFrogSizeLimit() {
         val engine = GameEngine().apply { resize(1080f, 2100f) }
         assertEquals(88f, engine.player.size, 0.01f)

@@ -10,7 +10,7 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ReminderDeliveryTest {
-    @Test fun requiresConsentAndPermissionAndDoesNotSendDuplicates() {
+    @Test fun requiresSystemPermissionAndDoesNotSendDuplicates() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val base = instrumentation.targetContext
         val name = "reminder_test_${System.nanoTime()}"
@@ -28,10 +28,8 @@ class ReminderDeliveryTest {
         val now = System.currentTimeMillis()
         val manager = base.getSystemService(NotificationManager::class.java)
         try {
-            prefs.edit().putLong("last_active", now - 4 * ReminderPolicy.DAY)
+            prefs.edit().putLong("reminder_schedule_started", now - 2 * ReminderPolicy.DAY)
                 .putInt("high_score", 123).commit()
-            assertFalse(reminders.deliverIfDue(now, 12)) // No user opt-in.
-            prefs.edit().putBoolean("reminders_enabled", true).commit()
             if (Build.VERSION.SDK_INT >= 33) assertFalse(reminders.deliverIfDue(now, 12))
             denyNotificationPermission = false
             assertTrue(reminders.deliverIfDue(now, 12))

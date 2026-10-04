@@ -2,7 +2,6 @@ package com.aliaygor.taptoflip
 
 import android.Manifest
 import android.os.Build
-import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import android.content.Intent
@@ -126,9 +125,14 @@ private const val ADMOB_BANNER_AD_UNIT_ID = "ca-app-pub-5287725227601079/1395452
 private const val ADMOB_INTERSTITIAL_AD_UNIT_ID = "ca-app-pub-5287725227601079/3135360764"
 
 class MainActivity : ComponentActivity() {
+    internal val rewardedContinue by lazy {
+        RewardedContinue(this) { adPolicy.shown(android.os.SystemClock.elapsedRealtime()) }
+    }
     private var interstitialAd: InterstitialAd? = null
-    private var gameOverCount = 0
-    private var lastInterstitialAt = android.os.SystemClock.elapsedRealtime()
+    private val adPolicy = InterstitialPolicy()
+    private var adLoading = false
+    private var adFailures = 0
+    private var adLoadedAt = 0L
 
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
@@ -145,7 +149,7 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             delay(1_600)
             MobileAds.initialize(this@MainActivity) {
-                loadInterstitial()
+                runOnUiThread { loadInterstitial(); rewardedContinue.load() }
             }
         }
     }
@@ -162,32 +166,61 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun loadInterstitial() {
+        if (adLoading || interstitialAd != null || isDestroyed) return
+        adLoading = true
         InterstitialAd.load(
             this,
-            ADMOB_INTERSTITIAL_AD_UNIT_ID,
+            if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0)
+                "ca-app-pub-3940256099942544/1033173712" else ADMOB_INTERSTITIAL_AD_UNIT_ID,
             AdRequest.Builder().build(),
             object : InterstitialAdLoadCallback() {
                 override fun onAdLoaded(ad: InterstitialAd) {
+                    android.util.Log.i("TapToFlipAds", "Interstitial ready")
+                    adLoading = false
+                    adFailures = 0
+                    adLoadedAt = android.os.SystemClock.elapsedRealtime()
                     interstitialAd = ad
                 }
 
                 override fun onAdFailedToLoad(error: LoadAdError) {
+                    adLoading = false
                     interstitialAd = null
+                    android.util.Log.w("TapToFlipAds", "Interstitial load failed: ${error.code} ${error.message}")
+                    val retryDelay = (30_000L * (1L shl adFailures.coerceAtMost(3))).coerceAtMost(240_000L)
+                    adFailures++
+                    lifecycleScope.launch { delay(retryDelay); loadInterstitial() }
                 }
             }
         )
     }
 
-    fun showInterstitial() {
-        gameOverCount++
+    fun showInterstitial(onFinished: () -> Unit = {}) {
+        adPolicy.roundCompleted()
         val now = android.os.SystemClock.elapsedRealtime()
-        if (gameOverCount % 5 != 0 || now - lastInterstitialAt < 120_000L) return
+        if (!adPolicy.canShow(now)) {
+            android.util.Log.i("TapToFlipAds", "Game over: waiting for 3 rounds or 45-second cooldown")
+            onFinished()
+            return
+        }
+        if (interstitialAd == null || now - adLoadedAt > 3_600_000L) {
+            android.util.Log.i("TapToFlipAds", "Game over: ad not ready; preparing for a later round")
+            interstitialAd = null
+            loadInterstitial()
+            onFinished()
+            return
+        }
         interstitialAd?.apply {
             fullScreenContentCallback = object : FullScreenContentCallback() {
-                override fun onAdDismissedFullScreenContent() = loadInterstitial()
-                override fun onAdFailedToShowFullScreenContent(error: AdError) = loadInterstitial()
+                override fun onAdDismissedFullScreenContent() { interstitialAd = null; loadInterstitial(); onFinished() }
+                override fun onAdFailedToShowFullScreenContent(error: AdError) {
+                    android.util.Log.w("TapToFlipAds", "Interstitial show failed: ${error.code} ${error.message}")
+                    interstitialAd = null
+                    loadInterstitial()
+                    onFinished()
+                }
                 override fun onAdShowedFullScreenContent() {
-                    lastInterstitialAt = android.os.SystemClock.elapsedRealtime()
+                    android.util.Log.i("TapToFlipAds", "Interstitial displayed")
+                    adPolicy.shown(android.os.SystemClock.elapsedRealtime())
                     interstitialAd = null
                 }
             }
@@ -224,22 +257,14 @@ private fun GameApp() {
     val progress = remember { PlayerProgress(context) }
     var soundEnabled by remember { mutableStateOf(progress.soundEnabled) }
     val reminders = remember { GameReminders(context) }
-    var remindersEnabled by remember { mutableStateOf(reminders.enabled) }
-    var notificationBlocked by remember { mutableStateOf(reminders.enabled && !reminders.allowed()) }
-    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        reminders.setEnabled(granted)
-        remindersEnabled = granted
-        notificationBlocked = !granted || !reminders.allowed()
+    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { _ ->
+        reminders.visit()
     }
-    DisposableEffect(activity) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                remindersEnabled = reminders.enabled
-                notificationBlocked = reminders.enabled && !reminders.allowed()
-            }
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= 33 && reminders.shouldRequestPermission()) {
+            reminders.markPermissionRequested()
+            permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
-        activity?.lifecycle?.addObserver(observer)
-        onDispose { activity?.lifecycle?.removeObserver(observer) }
     }
     BackHandler(screen == AppScreen.HOW_TO_PLAY) { screen = AppScreen.MENU }
 
@@ -247,27 +272,21 @@ private fun GameApp() {
         when (screen) {
             AppScreen.MENU -> HomeScreen(
                 frog = rememberFrogBitmap(),
-                remindersEnabled = remindersEnabled,
-                notificationBlocked = notificationBlocked,
-                onToggleReminders = { enabled ->
-                    if (enabled && Build.VERSION.SDK_INT >= 33 && !reminders.allowed()) {
-                        permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                    } else {
-                        reminders.setEnabled(enabled)
-                        remindersEnabled = enabled
-                        notificationBlocked = enabled && !reminders.allowed()
-                    }
-                },
-                onNotificationSettings = {
-                    val intent = if (Build.VERSION.SDK_INT >= 26) Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
-                        else Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.parse("package:${context.packageName}"))
-                    context.startActivity(intent)
-                },
                 soundEnabled = soundEnabled,
                 progress = progress,
                 onToggleSound = { soundEnabled = it; progress.soundEnabled = it },
                 onStart = { screen = AppScreen.GAME },
-                onHowToPlay = { screen = AppScreen.HOW_TO_PLAY }
+                onHowToPlay = { screen = AppScreen.HOW_TO_PLAY },
+                onShare = {
+                    val message = if (progress.best > 0)
+                        "My best is ${progress.best} in Tap to Flip. Can you beat it?"
+                    else "Try Tap to Flip! Tap, dodge, and see how far you can go."
+                    val intent = Intent(Intent.ACTION_SEND).apply {
+                        type = "text/plain"
+                        putExtra(Intent.EXTRA_TEXT, "$message https://play.google.com/store/apps/details?id=com.aliaygor.taptoflip")
+                    }
+                    context.startActivity(Intent.createChooser(intent, "Challenge a friend"))
+                }
             )
 
             AppScreen.HOW_TO_PLAY -> HowToPlayScreen(
@@ -351,12 +370,26 @@ private fun GameScreen(soundEnabled: Boolean, onExitToMenu: () -> Unit) {
     val frameClock = remember { mutableIntStateOf(0) }
     var frameVersion by frameClock
     var highScore by remember { mutableIntStateOf(preferences.getInt("high_score", 0)) }
-    var adShownForRound by remember { mutableStateOf(false) }
+    var roundFinalized by remember { mutableStateOf(false) }
+    var transitioning by remember { mutableStateOf(false) }
+    var rewardAttempted by remember { mutableStateOf(false) }
+    val reward = activity?.rewardedContinue
     var roundBest by remember { mutableIntStateOf(highScore) }
     val dailyTarget = remember { progress.dailyTarget }
+    fun finishRound(next: () -> Unit) {
+        if (transitioning || reward?.showing == true) return
+        transitioning = true
+        if (!roundFinalized) { progress.record(engine.score); roundFinalized = true }
+        if (engine.state == GameStatus.GAME_OVER && !rewardAttempted) {
+            activity?.showInterstitial { transitioning = false; next() }
+                ?: run { transitioning = false; next() }
+        } else { transitioning = false; next() }
+    }
     BackHandler {
-        if (engine.state == GameStatus.RUNNING) { engine.pause(); frameVersion++ }
-        else onExitToMenu()
+        if (reward?.showing != true && !transitioning) {
+            if (engine.state == GameStatus.RUNNING) { engine.pause(); frameVersion++ }
+            else finishRound(onExitToMenu)
+        }
     }
 
     DisposableEffect(activity) {
@@ -390,12 +423,7 @@ private fun GameScreen(soundEnabled: Boolean, onExitToMenu: () -> Unit) {
                     highScore = engine.score
                 }
                 if (previousState != GameStatus.GAME_OVER && engine.state == GameStatus.GAME_OVER) {
-                    progress.record(engine.score)
                     if (soundEnabled) audio.gameOver()
-                    if (!adShownForRound) {
-                        activity?.showInterstitial()
-                        adShownForRound = true
-                    }
                 }
                 if (previousState == GameStatus.RUNNING) frameVersion++
             }
@@ -405,16 +433,23 @@ private fun GameScreen(soundEnabled: Boolean, onExitToMenu: () -> Unit) {
     // The HUD and goal text must refresh even when this run is below the saved best.
     frameVersion
     Column(modifier = Modifier.fillMaxSize().background(Ink)) {
-        ScoreBar(engine.score, highScore, engine.difficulty, onExitToMenu) {
+        ScoreBar(engine.score, highScore, { finishRound(onExitToMenu) }) {
             engine.pause()
             frameVersion++
         }
+        androidx.compose.material3.LinearProgressIndicator(
+            progress = { (engine.score.toFloat() / maxOf(1, dailyTarget)).coerceIn(0f, 1f) },
+            modifier = Modifier.fillMaxWidth().height(3.dp),
+            color = Lime, trackColor = DeepGreen
+        )
         Text(
-            if (engine.score > roundBest && roundBest > 0) "Personal best beaten! Keep going."
+            if (engine.protectionSeconds > 0f) "SHIELD ACTIVE • ${(engine.protectionSeconds + 0.99f).toInt()}s"
+            else if (engine.score > roundBest && roundBest > 0) "Personal best beaten! Keep going."
             else if (roundBest > 0) "${maxOf(1, roundBest - engine.score + 1)} points to a new personal best"
             else "First challenge: $dailyTarget points",
             modifier = Modifier.fillMaxWidth().background(DeepGreen).padding(8.dp),
-            color = Color.White, fontSize = 12.sp, textAlign = TextAlign.Center
+            color = Color.White.copy(alpha = 0.8f), fontSize = 11.sp, textAlign = TextAlign.Center,
+            maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
         )
         Box(
             modifier = Modifier
@@ -451,7 +486,7 @@ private fun GameScreen(soundEnabled: Boolean, onExitToMenu: () -> Unit) {
                         engine.resume()
                         frameVersion++
                     },
-                    onMenu = onExitToMenu
+                    onMenu = { finishRound(onExitToMenu) }
                 )
 
                 GameStatus.GAME_OVER -> GameOverOverlay(
@@ -459,20 +494,29 @@ private fun GameScreen(soundEnabled: Boolean, onExitToMenu: () -> Unit) {
                     highScore = highScore,
                     previousBest = roundBest,
                     dailyTarget = dailyTarget,
-                    onShare = {
-                        val share = Intent(Intent.ACTION_SEND).apply {
-                            type = "text/plain"
-                            putExtra(Intent.EXTRA_TEXT, "I scored ${engine.score} in Tap to Flip! Can you beat me? https://play.google.com/store/apps/details?id=com.aliaygor.taptoflip")
+                    showContinue = !engine.reviveUsed && reward?.configured == true,
+                    continueReady = reward?.ready == true,
+                    busy = transitioning || reward?.showing == true,
+                    continueMessage = reward?.message,
+                    onContinue = {
+                        if (engine.state == GameStatus.GAME_OVER && !engine.reviveUsed) {
+                            rewardAttempted = true
+                            reward?.show { earned ->
+                                if (earned) engine.reviveAfterReward()
+                                frameVersion++
+                            }
                         }
-                        context.startActivity(Intent.createChooser(share, "Challenge a friend"))
                     },
                     onRestart = {
-                        roundBest = highScore
-                        engine.reset()
-                        adShownForRound = false
-                        frameVersion++
+                        finishRound {
+                            roundBest = highScore
+                            engine.reset()
+                            roundFinalized = false
+                            rewardAttempted = false
+                            frameVersion++
+                        }
                     },
-                    onMenu = onExitToMenu
+                    onMenu = { finishRound(onExitToMenu) }
                 )
 
                 GameStatus.RUNNING -> Unit
@@ -486,12 +530,11 @@ private fun GameScreen(soundEnabled: Boolean, onExitToMenu: () -> Unit) {
 private fun ScoreBar(
     score: Int,
     highScore: Int,
-    difficulty: Float,
     onMenu: () -> Unit,
     onPause: () -> Unit
 ) {
     Row(
-        modifier = Modifier.fillMaxWidth().background(Ink).padding(horizontal = 10.dp, vertical = 8.dp),
+        modifier = Modifier.fillMaxWidth().background(Brush.verticalGradient(listOf(Color(0xFF123B32), Ink))).padding(horizontal = 16.dp, vertical = 10.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -499,11 +542,11 @@ private fun ScoreBar(
             onClick = onMenu,
             modifier = Modifier.background(Color.White.copy(alpha = 0.1f), CircleShape)
         ) {
-            Text("⌂", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+            Text("MENU", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
         }
         ScoreChip("SCORE", score.toString(), Color.White)
         ScoreChip("BEST", highScore.toString(), Lime)
-        ScoreChip("SPEED", "${(difficulty * 100).roundToInt()}%", Color(0xFFFFD166))
+
         IconButton(
             onClick = onPause,
             modifier = Modifier.background(Color.White.copy(alpha = 0.1f), CircleShape)
@@ -517,7 +560,7 @@ private fun ScoreBar(
 private fun ScoreChip(label: String, value: String, color: Color) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Text(label, color = Color.White.copy(alpha = 0.58f), fontSize = 9.sp, fontWeight = FontWeight.Bold)
-        Text(value, color = color, fontSize = 19.sp, fontWeight = FontWeight.Black)
+        Text(value, color = color, fontSize = 24.sp, fontWeight = FontWeight.Black)
     }
 }
 
@@ -601,6 +644,11 @@ private fun GameplayCanvas(engine: GameEngine, frameClock: IntState) {
             }
         }
         drawFrogLimbs(engine)
+        if (engine.protectionSeconds > 0f) {
+            drawCircle(Color(0xFFCBF578), engine.player.size * 0.85f,
+                Offset(engine.player.x + engine.player.size / 2f, engine.player.y + engine.player.size / 2f),
+                style = Stroke(width = 4f))
+        }
 
         if (engine.jumpFeedback > 0f) {
             val alpha = engine.jumpFeedback * 0.28f
@@ -937,10 +985,16 @@ private fun GameOverOverlay(
     highScore: Int,
     previousBest: Int,
     dailyTarget: Int,
-    onShare: () -> Unit,
+    showContinue: Boolean,
+    continueReady: Boolean,
+    busy: Boolean,
+    continueMessage: String?,
+    onContinue: () -> Unit,
     onRestart: () -> Unit,
     onMenu: () -> Unit
 ) {
+    var actionsReady by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { delay(650); actionsReady = true }
     CenterOverlay(if (score > previousBest) "NEW PERSONAL BEST!" else "NICE TRY!", "Score  $score     Best  $highScore") {
         Text(if (score > previousBest) "You raised the bar. Ready to go higher?"
             else "${previousBest - score + 1} more points to beat your record.",
@@ -949,10 +1003,17 @@ private fun GameOverOverlay(
         Text(if (score >= dailyTarget) "Daily goal reached!" else "Today's goal: $dailyTarget points",
             color = Ink, fontSize = 13.sp)
         Spacer(Modifier.height(16.dp))
-        PrimaryButton("ONE MORE TRY", onRestart)
-        MenuTextButton("CHALLENGE A FRIEND", onShare)
+        if (showContinue) {
+            PrimaryButton(if (continueReady) "WATCH AD • CONTINUE ONCE" else "PREPARING CONTINUE AD…", onContinue,
+                enabled = continueReady && !busy && actionsReady)
+            Text("Keep your score • 3-second shield • once per run", color = DeepGreen, fontSize = 11.sp,
+                textAlign = TextAlign.Center, modifier = Modifier.padding(vertical = 8.dp))
+            continueMessage?.let { Text(it, color = Ink, fontSize = 11.sp, textAlign = TextAlign.Center) }
+            Spacer(Modifier.height(8.dp))
+        }
+        PrimaryButton("ONE MORE TRY", onRestart, enabled = !busy && actionsReady)
         Spacer(Modifier.height(8.dp))
-        SecondaryButton("MAIN MENU", onMenu)
+        SecondaryButton("MAIN MENU", onMenu, enabled = !busy && actionsReady)
     }
 }
 
@@ -1028,9 +1089,10 @@ private fun rememberFrogBitmap(): ImageBitmap {
 }
 
 @Composable
-private fun PrimaryButton(text: String, onClick: () -> Unit) {
+private fun PrimaryButton(text: String, onClick: () -> Unit, enabled: Boolean = true) {
     Button(
         onClick = onClick,
+        enabled = enabled,
         modifier = Modifier
             .fillMaxWidth()
             .height(58.dp),
@@ -1065,9 +1127,10 @@ private fun MenuTextButton(text: String, onClick: () -> Unit, color: Color = Ink
 }
 
 @Composable
-private fun SecondaryButton(text: String, onClick: () -> Unit) {
+private fun SecondaryButton(text: String, onClick: () -> Unit, enabled: Boolean = true) {
     OutlinedButton(
         onClick = onClick,
+        enabled = enabled,
         modifier = Modifier.fillMaxWidth().height(50.dp),
         shape = RoundedCornerShape(18.dp)
     ) {
@@ -1124,7 +1187,8 @@ private fun BannerPanel(activity: MainActivity?) {
             factory = { context ->
                 AdView(context).apply {
                     setAdSize(AdSize.BANNER)
-                    adUnitId = ADMOB_BANNER_AD_UNIT_ID
+                    adUnitId = if (context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0)
+                        "ca-app-pub-3940256099942544/6300978111" else ADMOB_BANNER_AD_UNIT_ID
                     loadAd(AdRequest.Builder().build())
                 }
             },
