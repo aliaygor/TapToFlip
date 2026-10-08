@@ -1,7 +1,7 @@
 [versions]
 agp = "9.0.1"
 foundation = "1.9.0"
-kotlin = "2.2.10"
+kotlin = "2.3.0"
 coreKtx = "1.16.0"
 coreSplashscreen = "1.0.1"
 junit = "4.13.2"

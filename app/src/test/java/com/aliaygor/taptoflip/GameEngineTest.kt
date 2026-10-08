@@ -242,12 +242,12 @@ class GameEngineTest {
     }
 
     @Test
-    fun difficultyContinuesPastOldSpeedCap() {
+    fun bonusScoreDoesNotAccelerateLearningPhase() {
         val engine = engine(gravity = 0f)
         engine.setScoreForTest(500)
         engine.update(0.01f)
 
-        assertTrue(engine.difficulty > 1.78f)
+        assertEquals(1f, engine.difficulty, 0.001f)
     }
 
     @Test

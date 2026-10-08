@@ -37,9 +37,6 @@ android {
         targetCompatibility = JavaVersion.VERSION_11
     }
 
-    kotlinOptions {
-        jvmTarget = "11"
-    }
 
     buildFeatures {
         compose = true
@@ -77,4 +74,8 @@ dependencies {
     implementation("androidx.work:work-runtime-ktx:2.10.1")
     // AdMob otherwise brings Fragment 1.1.0 transitively.
     implementation("androidx.fragment:fragment:1.9.1")
+}
+
+kotlin {
+    compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_11) }
 }

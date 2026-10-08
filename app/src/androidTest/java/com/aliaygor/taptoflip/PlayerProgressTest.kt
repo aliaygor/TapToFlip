@@ -49,4 +49,28 @@ class PlayerProgressTest {
         PlayerProgress(context).soundEnabled = false
         assertFalse(PlayerProgress(context).soundEnabled)
     }
+
+    @Test fun tasksRewardsAndModeRecordsSurviveAndRefresh() {
+        val context = isolatedContext()
+        val progress = PlayerProgress(context)
+        val engine = GameEngine(gravity = 0f, mode = GameMode.SURVIVAL)
+        engine.resize(400f, 700f)
+        repeat(3) {
+            engine.setScoreForTest(60)
+            engine.setPlayerForTest(700f)
+            engine.update(0.02f)
+            repeat(6) { engine.combo.passed() }
+            progress.recordRun(engine)
+            engine.reset()
+        }
+        val reopened = PlayerProgress(context)
+        assertEquals(listOf(true, true, true), reopened.tasks.completed)
+        assertEquals(3, reopened.rewardStars)
+        assertEquals(60, reopened.modeBest(GameMode.SURVIVAL))
+        assertEquals(0, reopened.best)
+        assertEquals(3, reopened.totalGames)
+        context.getSharedPreferences("", 0).edit().putString("tasks_day", "2000-01-01").commit()
+        assertEquals(DailyTasks(), reopened.tasks)
+        assertEquals(3, reopened.rewardStars)
+    }
 }

@@ -40,6 +40,7 @@ internal fun HomeScreen(
     onHowToPlay: () -> Unit,
     onShare: () -> Unit
 ) {
+    var mode by remember { mutableStateOf(progress.selectedMode) }
     var showScores by remember { mutableStateOf(false) }
     val best = progress.best
     val dailyTarget = progress.dailyTarget
@@ -102,6 +103,17 @@ internal fun HomeScreen(
                         trackColor = Color.White.copy(alpha = 0.08f))
                 }
             }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                GameMode.entries.forEach { item ->
+                    FilterChip(selected = mode == item, onClick = { mode = item; progress.selectedMode = item; Telemetry.emit("game_mode_selected", "mode" to item) },
+                        label = { Text(when (item) { GameMode.CLASSIC -> gameText("Klasik", "Classic"); GameMode.TIME_ATTACK -> "60s"; GameMode.SURVIVAL -> gameText("Hayatta kal", "Survival") }, fontSize = 11.sp) })
+                }
+            }
+            Text(gameText("Mod rekoru", "Mode best") + ": ${progress.modeBest(mode)}", color = Accent)
+            val tasks = progress.tasks
+            Text(gameText("Günlük görevler", "Daily tasks") + " • ${progress.rewardStars} ★", color = Accent, fontWeight = FontWeight.Bold)
+            Text(gameText("Puan", "Points") + " ${tasks.points}/100 • " + gameText("Oyun", "Games") + " ${tasks.games}/3 • " + gameText("Kombo", "Combos") + " ${tasks.combos}/5", color = Muted, fontSize = 12.sp)
+            Text(gameText("Tamamlanan oyun", "Completed games") + ": ${progress.totalGames}", color = Muted, fontSize = 12.sp)
             Surface(onClick = onStart, shape = RoundedCornerShape(20.dp),
                 modifier = Modifier.fillMaxWidth().height(64.dp), color = Accent) {
                 Row(Modifier.fillMaxSize().background(Brush.horizontalGradient(listOf(Accent, Color(0xFF91EAAF))))

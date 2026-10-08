@@ -194,7 +194,8 @@ class MainActivity : ComponentActivity() {
         )
     }
 
-    fun showInterstitial(onFinished: () -> Unit = {}) {
+    fun showInterstitial(roundSeconds: Float = 30f, onFinished: () -> Unit = {}) {
+        if (roundSeconds < 20f) { onFinished(); return }
         adPolicy.roundCompleted()
         val now = android.os.SystemClock.elapsedRealtime()
         if (!adPolicy.canShow(now)) {
@@ -363,25 +364,32 @@ private fun GameScreen(soundEnabled: Boolean, onExitToMenu: () -> Unit) {
         context.getSharedPreferences("tap_to_flip", Context.MODE_PRIVATE)
     }
     val progress = remember { PlayerProgress(context) }
-    val engine = remember { GameEngine() }
+    val engine = remember { GameEngine(mode = progress.selectedMode, earlyLosses = progress.earlyLosses) }
     val audio = remember { GameAudio() }
     val haptic = LocalHapticFeedback.current
     val frog = rememberFrogBitmap()
     val frameClock = remember { mutableIntStateOf(0) }
     var frameVersion by frameClock
-    var highScore by remember { mutableIntStateOf(preferences.getInt("high_score", 0)) }
+    var highScore by remember { mutableIntStateOf(progress.modeBest(engine.mode)) }
     var roundFinalized by remember { mutableStateOf(false) }
     var transitioning by remember { mutableStateOf(false) }
     var rewardAttempted by remember { mutableStateOf(false) }
     val reward = activity?.rewardedContinue
     var roundBest by remember { mutableIntStateOf(highScore) }
     val dailyTarget = remember { progress.dailyTarget }
+    var countdown by remember { mutableIntStateOf(3) }
+    var tutorial by remember { mutableStateOf(!progress.tutorialSeen) }
+    LaunchedEffect(tutorial, roundFinalized, countdown > 0, engine.state) {
+        if (tutorial || countdown <= 0 || engine.state != GameStatus.RUNNING) return@LaunchedEffect
+        while (countdown > 0) { delay(1000); countdown-- }
+        Telemetry.emit("game_start", "mode" to engine.mode)
+    }
     fun finishRound(next: () -> Unit) {
         if (transitioning || reward?.showing == true) return
         transitioning = true
-        if (!roundFinalized) { progress.record(engine.score); roundFinalized = true }
+        if (!roundFinalized) { progress.recordRun(engine); roundFinalized = true }
         if (engine.state == GameStatus.GAME_OVER && !rewardAttempted) {
-            activity?.showInterstitial { transitioning = false; next() }
+            activity?.showInterstitial(engine.roundAge) { transitioning = false; next() }
                 ?: run { transitioning = false; next() }
         } else { transitioning = false; next() }
     }
@@ -396,33 +404,44 @@ private fun GameScreen(soundEnabled: Boolean, onExitToMenu: () -> Unit) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_PAUSE) {
                 engine.pause()
-                preferences.edit().putInt("high_score", highScore).apply()
+                progress.saveBest(engine.mode, engine.score)
+
                 frameVersion++
             }
         }
         activity?.lifecycle?.addObserver(observer)
         onDispose {
             activity?.lifecycle?.removeObserver(observer)
-            preferences.edit().putInt("high_score", highScore).apply()
+
+            if (!roundFinalized) { progress.recordRun(engine); roundFinalized = true }
+            progress.saveBest(engine.mode, engine.score)
             audio.release()
         }
     }
 
-    LaunchedEffect(engine.state) {
-        if (engine.state != GameStatus.RUNNING) return@LaunchedEffect
+    LaunchedEffect(engine.state, countdown, tutorial) {
+        if (countdown > 0 || tutorial || engine.state != GameStatus.RUNNING) return@LaunchedEffect
         var lastFrame = 0L
         while (engine.state == GameStatus.RUNNING) {
             withFrameNanos { now ->
                 if (lastFrame == 0L) lastFrame = now
-                val dt = ((now - lastFrame) / 1_000_000_000f).coerceAtMost(0.033f)
+                val dt = ((now - lastFrame) / 1_000_000_000f).coerceAtMost(0.25f)
                 lastFrame = now
                 val previousState = engine.state
+                val previousMilestone = engine.score / 100
+                val previousBonus = engine.bonusFeedback
                 engine.update(dt)
+                if (engine.score / 100 > previousMilestone) Telemetry.emit("score_reached", "score" to engine.score, "mode" to engine.mode)
+                if (engine.bonusFeedback > previousBonus && soundEnabled) audio.jump()
 
                 if (engine.score > highScore) {
                     highScore = engine.score
                 }
                 if (previousState != GameStatus.GAME_OVER && engine.state == GameStatus.GAME_OVER) {
+                    progress.saveBest(engine.mode, engine.score)
+                    Telemetry.emit("game_over", "seconds" to engine.roundAge, "score" to engine.score,
+                        "mode" to engine.mode, "under10" to (engine.roundAge < 10f),
+                        "under30" to (engine.roundAge < 30f), "under60" to (engine.roundAge < 60f))
                     if (soundEnabled) audio.gameOver()
                 }
                 if (previousState == GameStatus.RUNNING) frameVersion++
@@ -443,7 +462,11 @@ private fun GameScreen(soundEnabled: Boolean, onExitToMenu: () -> Unit) {
             color = Lime, trackColor = DeepGreen
         )
         Text(
-            if (engine.protectionSeconds > 0f) "SHIELD ACTIVE • ${(engine.protectionSeconds + 0.99f).toInt()}s"
+            if (engine.mode == GameMode.TIME_ATTACK) "${engine.remainingSeconds.toInt()}s • ${engine.combo.multiplier}x"
+            else if (engine.roundAge >= 20f && engine.roundAge < 25f) gameText("KENAR DESTEĞİ BİTİYOR • ${(25f - engine.roundAge).toInt() + 1}s", "EDGE SUPPORT ENDING • ${(25f - engine.roundAge).toInt() + 1}s")
+            else if (engine.roundAge < 25f) gameText("ALIŞMA SÜRESİ • Dokun ve zıpla", "WARM UP • Tap to hop")
+            else if (engine.combo.multiplier > 1) "COMBO ${engine.combo.multiplier}x • ${engine.combo.streak}"
+            else if (engine.protectionSeconds > 0f) "SHIELD ACTIVE • ${(engine.protectionSeconds + 0.99f).toInt()}s"
             else if (engine.score > roundBest && roundBest > 0) "Personal best beaten! Keep going."
             else if (roundBest > 0) "${maxOf(1, roundBest - engine.score + 1)} points to a new personal best"
             else "First challenge: $dailyTarget points",
@@ -461,7 +484,7 @@ private fun GameScreen(soundEnabled: Boolean, onExitToMenu: () -> Unit) {
                 }
                 .pointerInput(engine.state, soundEnabled) {
                     detectTapGestures {
-                        if (engine.state == GameStatus.RUNNING) {
+                        if (engine.state == GameStatus.RUNNING && countdown == 0 && !tutorial) {
                             engine.jump()
                             if (soundEnabled) {
                                 audio.jump()
@@ -480,6 +503,18 @@ private fun GameScreen(soundEnabled: Boolean, onExitToMenu: () -> Unit) {
                 TapHint(engine, frameClock)
             }
 
+            if (tutorial) {
+                CenterOverlay(gameText("Nasıl oynanır?", "How to play"), gameText("Dokunarak zıpla, engellerden kaç.", "Tap to hop. Dodge the obstacles.")) {
+                    Text(gameText("İlk 25 saniye ekran kenarları seni korur. Sonra kendi ritmini bul!", "Screen edges protect you for the first 25 seconds. Find your rhythm!"), color = Ink)
+                    PrimaryButton(gameText("HAZIRIM", "READY"), { progress.tutorialSeen = true; tutorial = false })
+                }
+            } else if (countdown > 0 && engine.state == GameStatus.RUNNING) {
+                Text(countdown.toString(), Modifier.align(Alignment.Center), color = Color.White, fontSize = 72.sp, fontWeight = FontWeight.Black)
+            }
+            if (engine.bonusFeedback > 0f) {
+                Text("+ ${5 * engine.combo.multiplier} • ${engine.combo.multiplier}x", Modifier.align(Alignment.TopCenter).padding(top = 40.dp)
+                    .graphicsLayer { alpha = engine.bonusFeedback; translationY = -30f * (1f - engine.bonusFeedback) }, color = Lime, fontWeight = FontWeight.Black, fontSize = 24.sp)
+            }
             when (engine.state) {
                 GameStatus.PAUSED -> PauseOverlay(
                     onResume = {
@@ -490,11 +525,15 @@ private fun GameScreen(soundEnabled: Boolean, onExitToMenu: () -> Unit) {
                 )
 
                 GameStatus.GAME_OVER -> GameOverOverlay(
+                    dailyTaskSummary = progress.tasks.advance(engine.score, engine.combo.events, true).let {
+                        gameText("Günlük görevler", "Daily tasks") + " • ${it.completed.count { done -> done }}/3 ★"
+                    },
+                    timedOut = engine.mode == GameMode.TIME_ATTACK && engine.remainingSeconds <= 0f,
                     score = engine.score,
                     highScore = highScore,
                     previousBest = roundBest,
                     dailyTarget = dailyTarget,
-                    showContinue = !engine.reviveUsed && reward?.configured == true,
+                    showContinue = (engine.mode != GameMode.TIME_ATTACK || engine.remainingSeconds > 0f) && !engine.reviveUsed && reward?.configured == true,
                     continueReady = reward?.ready == true,
                     busy = transitioning || reward?.showing == true,
                     continueMessage = reward?.message,
@@ -510,7 +549,10 @@ private fun GameScreen(soundEnabled: Boolean, onExitToMenu: () -> Unit) {
                     onRestart = {
                         finishRound {
                             roundBest = highScore
+                            Telemetry.emit("retry_clicked", "mode" to engine.mode)
+                            engine.earlyLosses = progress.earlyLosses
                             engine.reset()
+                            countdown = 3
                             roundFinalized = false
                             rewardAttempted = false
                             frameVersion++
@@ -823,7 +865,9 @@ private fun DrawScope.drawGrassPlatform(platform: PlatformState, roundAge: Float
 }
 
 private fun DrawScope.drawBirdObstacle(bird: PlatformState, roundAge: Float) {
-    if (bird.x + bird.width < 0f || bird.x > size.width) return
+    if (bird.x + bird.width < 0f || bird.x > size.width) {
+        return
+    }
     val flap = sin(roundAge * 12f + bird.id) * bird.height * 0.23f
     val center = Offset(bird.x + bird.width / 2f, bird.y + bird.height / 2f)
     val bodyColor = Color(0xFF5B4BC4)
@@ -975,12 +1019,14 @@ private fun PauseOverlay(onResume: () -> Unit, onMenu: () -> Unit) {
     CenterOverlay("PAUSED", "Your hop is waiting.") {
         PrimaryButton("RESUME", onResume)
         Spacer(Modifier.height(8.dp))
-        SecondaryButton("MAIN MENU", onMenu)
+        SecondaryButton(gameText("ANA MENÜ", "MAIN MENU"), onMenu)
     }
 }
 
 @Composable
 private fun GameOverOverlay(
+    dailyTaskSummary: String = "",
+    timedOut: Boolean = false,
     score: Int,
     highScore: Int,
     previousBest: Int,
@@ -995,13 +1041,14 @@ private fun GameOverOverlay(
 ) {
     var actionsReady by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { delay(650); actionsReady = true }
-    CenterOverlay(if (score > previousBest) "NEW PERSONAL BEST!" else "NICE TRY!", "Score  $score     Best  $highScore") {
-        Text(if (score > previousBest) "You raised the bar. Ready to go higher?"
-            else "${previousBest - score + 1} more points to beat your record.",
+    CenterOverlay(if (timedOut) gameText("SÜRE TAMAMLANDI!", "TIME COMPLETE!") else if (score > previousBest) gameText("YENİ REKOR!", "NEW PERSONAL BEST!") else gameText("GÜZEL DENEME!", "NICE TRY!"), gameText("Puan  $score     Rekor  $highScore", "Score  $score     Best  $highScore")) {
+        Text(if (score > previousBest) gameText("Rekorunu yükselttin. Daha ilerisine hazır mısın?", "You raised the bar. Ready to go higher?")
+            else gameText("Her denemede ritmini buluyorsun. Rekora ${previousBest - score + 1} puan kaldı.", "Find your rhythm with every try. ${previousBest - score + 1} points to your record."),
             color = DeepGreen, textAlign = TextAlign.Center, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(8.dp))
         Text(if (score >= dailyTarget) "Daily goal reached!" else "Today's goal: $dailyTarget points",
             color = Ink, fontSize = 13.sp)
+        Text(dailyTaskSummary, color = DeepGreen, fontSize = 13.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(16.dp))
         if (showContinue) {
             PrimaryButton(if (continueReady) "WATCH AD • CONTINUE ONCE" else "PREPARING CONTINUE AD…", onContinue,
@@ -1011,9 +1058,9 @@ private fun GameOverOverlay(
             continueMessage?.let { Text(it, color = Ink, fontSize = 11.sp, textAlign = TextAlign.Center) }
             Spacer(Modifier.height(8.dp))
         }
-        PrimaryButton("ONE MORE TRY", onRestart, enabled = !busy && actionsReady)
+        PrimaryButton(gameText("TEKRAR OYNA", "ONE MORE TRY"), onRestart, enabled = !busy && actionsReady)
         Spacer(Modifier.height(8.dp))
-        SecondaryButton("MAIN MENU", onMenu, enabled = !busy && actionsReady)
+        SecondaryButton(gameText("ANA MENÜ", "MAIN MENU"), onMenu, enabled = !busy && actionsReady)
     }
 }
 

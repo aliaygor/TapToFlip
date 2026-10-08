@@ -1,7 +1,7 @@
 package com.aliaygor.taptoflip
 
 import kotlin.math.abs
-import kotlin.math.ln
+import kotlin.math.sin
 import kotlin.math.max
 import kotlin.random.Random
 
@@ -21,15 +21,25 @@ data class PlatformState(
     var y: Float,
     var width: Float,
     var height: Float,
-    val type: ObstacleType = ObstacleType.GRASS
+    val type: ObstacleType = ObstacleType.GRASS,
+    var passed: Boolean = false,
+    var anchorY: Float = y
 )
 
 class GameEngine(
     private val random: Random = Random.Default,
-    private val gravity: Float = 980f,
-    private val jumpVelocity: Float = -510f,
-    private val baseScrollSpeed: Float = 170f
+    private val gravity: Float = GameplayRules.GRAVITY,
+    private val jumpVelocity: Float = GameplayRules.JUMP,
+    private val baseScrollSpeed: Float = GameplayRules.START_SPEED,
+    var mode: GameMode = GameMode.CLASSIC,
+    var earlyLosses: Int = 0
 ) {
+    val combo = ComboTracker()
+    var bonusFeedback = 0f; private set
+    val remainingSeconds get() = (GameplayRules.TIME_ATTACK_SECONDS - roundAge).coerceAtLeast(0f)
+    private var bonusScore = 0
+    private var accumulator = 0f
+
     var worldWidth = 0f
         private set
     var worldHeight = 0f
@@ -59,6 +69,7 @@ class GameEngine(
         player.y = worldHeight * 0.48f
         player.velocityY = 0f
         platforms.removeAll { it.x < player.x + player.size * 3f && it.x + it.width > player.x - player.size }
+        combo.breakCombo()
         protectionSeconds = 3f
         crashFeedback = 0f
         jumpFeedback = 0f
@@ -86,6 +97,7 @@ class GameEngine(
             platforms.forEach {
                 it.x *= scaleX
                 it.y *= scaleY
+                it.anchorY *= scaleY
                 it.width *= scaleX
                 it.height *= scaleY
             }
@@ -128,6 +140,10 @@ class GameEngine(
         reviveUsed = false
         protectionSeconds = 0f
         elapsedScore = 0f
+        bonusScore = 0
+        accumulator = 0f
+        bonusFeedback = 0f
+        combo.reset()
         nextPlatformId = 1
         platforms.clear()
         player.y = worldHeight * 0.48f
@@ -144,23 +160,45 @@ class GameEngine(
     }
 
     fun update(deltaSeconds: Float) {
+        if (state != GameStatus.RUNNING || !initialized || !deltaSeconds.isFinite()) return
+        accumulator += deltaSeconds.coerceIn(0f, 0.25f)
+        val stepSize = 1f / 120f
+        while (accumulator + 0.000001f >= stepSize && state == GameStatus.RUNNING) {
+            accumulator -= stepSize
+            step(stepSize)
+        }
+    }
+    private fun step(deltaSeconds: Float) {
         if (state != GameStatus.RUNNING || !initialized) return
 
         val dt = deltaSeconds.coerceIn(0f, 0.033f)
         roundAge += dt
         jumpFeedback = (jumpFeedback - dt * 4.5f).coerceAtLeast(0f)
-        difficulty = 1f + ln(1f + score / 70f) * 0.65f
+        difficulty = GameplayRules.difficulty(roundAge, earlyLosses, mode)
+        bonusFeedback = (bonusFeedback - dt).coerceAtLeast(0f)
         val scroll = baseScrollSpeed * (worldWidth / 400f) * difficulty * dt
 
+        val wasInsideWorld = !touchesWorldEdge()
         player.velocityY += gravity * (worldHeight / 700f) * dt
         player.y += player.velocityY * dt
+        if (roundAge < GameplayRules.LEARNING_SECONDS && wasInsideWorld && touchesWorldEdge()) {
+            player.y = player.y.coerceIn(0f, worldHeight - player.size)
+            player.velocityY = 0f
+            combo.breakCombo()
+        }
         val protected = protectionSeconds > 0f
         protectionSeconds = (protectionSeconds - dt).coerceAtLeast(0f)
         if (protected) player.y = player.y.coerceIn(0f, (worldHeight - player.size).coerceAtLeast(0f))
-        platforms.forEach { it.x -= scroll }
+        platforms.forEach {
+            it.x -= scroll
+            if (roundAge >= 60f && it.type != ObstacleType.GRASS) {
+                it.y = (it.anchorY + sin(roundAge * 1.2f + it.id) * worldHeight * 0.035f * ((roundAge - 60f) / 10f).coerceIn(0f, 1f))
+                    .coerceIn(0f, worldHeight - it.height)
+            }
+        }
 
         elapsedScore += dt * 10f
-        val updatedScore = elapsedScore.toInt()
+        val updatedScore = elapsedScore.toInt() + bonusScore
         if (updatedScore > score) {
             score = updatedScore
             scoreEvent = score / 10
@@ -172,6 +210,19 @@ class GameEngine(
             return
         }
 
+        platforms.forEach {
+            if (!it.passed && it.x + it.width < player.x) {
+                it.passed = true
+                bonusScore += combo.passed()
+                if (combo.streak % 10 == 0) bonusScore += 20
+                score = elapsedScore.toInt() + bonusScore
+                bonusFeedback = 1f
+            }
+        }
+        if (mode == GameMode.TIME_ATTACK && remainingSeconds <= 0f) {
+            state = GameStatus.GAME_OVER
+            return
+        }
         platforms.removeAll { it.x + it.width < -24f }
         while (rightmostEdge() < worldWidth * 1.55f) spawnPlatform()
     }
@@ -194,7 +245,7 @@ class GameEngine(
 
     internal fun setScoreForTest(value: Int) {
         score = value.coerceAtLeast(0)
-        elapsedScore = score.toFloat()
+        elapsedScore = (score - bonusScore).toFloat()
     }
 
     private fun collidesWithPlayer(platform: PlatformState): Boolean {
@@ -237,7 +288,8 @@ class GameEngine(
         val expertCrowding = ((score - 1_000) / 1_500f).coerceIn(0f, 1f)
         val minGap = worldWidth * (0.27f - crowding * 0.07f - expertCrowding * 0.04f)
         val maxGap = worldWidth * (0.48f - crowding * 0.13f - expertCrowding * 0.08f)
-        val gap = randomRange(minGap, maxGap)
+        val reactionGap = baseScrollSpeed * (worldWidth / 400f) * difficulty * 1.25f
+        val gap = randomRange(maxOf(minGap, reactionGap), maxOf(maxGap, reactionGap + worldWidth * 0.12f * (1f - crowding * 0.4f - expertCrowding * 0.15f)))
 
         val height = when (type) {
             ObstacleType.GRASS -> platformHeight()
