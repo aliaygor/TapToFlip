@@ -18,6 +18,9 @@ class HomeLayoutTest {
     @Test fun playAndRankingsAreVisibleWithoutScrolling() {
         compose.onNodeWithText("LET'S PLAY").assertIsDisplayed()
         compose.onNodeWithText(gameText("SIRALAMA", "RANKINGS")).assertIsDisplayed()
+        compose.onNodeWithText(gameText("Hesap", "Account")).assertIsDisplayed().performClick()
+        compose.onNodeWithText("Google Play Games", useUnmergedTree = true).assertIsDisplayed()
+        compose.onNodeWithText(gameText("KAPAT", "CLOSE")).performClick()
         val bitmap = compose.onRoot().captureToImage().asAndroidBitmap()
         File(compose.activity.getExternalFilesDir(null), "home-layout.png").outputStream().use {
             bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)

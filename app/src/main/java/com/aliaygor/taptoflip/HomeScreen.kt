@@ -1,6 +1,7 @@
 package com.aliaygor.taptoflip
 
 import androidx.compose.animation.core.*
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -76,14 +77,23 @@ internal fun HomeScreen(
                         fontSize = 15.sp, letterSpacing = 2.sp)
                     Text("THE ONE-TAP CHALLENGE", color = Muted, fontSize = 9.sp, letterSpacing = 1.sp)
                 }
-                FilledTonalButton(onClick = { onToggleSound(!soundEnabled) },
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (competition != null) {
+                        TextButton(onClick = { showAccount = true }, contentPadding = PaddingValues(8.dp)) {
+                            AccountIcon(Modifier.size(20.dp))
+                            Spacer(Modifier.width(5.dp))
+                            Text(gameText("Hesap", "Account"), color = Color.White, fontSize = 11.sp)
+                        }
+                    }
+                    FilledTonalButton(onClick = { onToggleSound(!soundEnabled) },
                     colors = ButtonDefaults.filledTonalButtonColors(containerColor = Panel, contentColor = Color.White),
                     contentPadding = PaddingValues(horizontal = 14.dp),
                     modifier = Modifier.semantics { contentDescription = if (soundEnabled) "Turn sound off" else "Turn sound on" }) {
-                    Text(if (soundEnabled) "SOUND ON" else "SOUND OFF", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    Text(if (soundEnabled) gameText("SES AÇIK", "SOUND ON") else gameText("SES KAPALI", "SOUND OFF"), fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                    }
                 }
             }
-            Box(Modifier.size(if (compact) 64.dp else 116.dp), contentAlignment = Alignment.Center) {
+            Box(Modifier.size(if (compact) 64.dp else 96.dp), contentAlignment = Alignment.Center) {
                 Image(styledFrogBitmap(frog, style), "Tap to Flip frog", Modifier.fillMaxSize().graphicsLayer { translationY = lift }, contentScale = ContentScale.Fit, colorFilter = style.filter())
             }
             Text(gameText("Ritmini bul. Rekorunu geç.", "Find your rhythm. Beat your best."), color = Muted, fontSize = 14.sp)
@@ -119,9 +129,22 @@ internal fun HomeScreen(
                 HomeSecondary(gameText("REKORLARIM", "MY RECORDS"), Modifier.weight(1f)) { showScores = true }
             }
             if (competition != null) {
-                TextButton(onClick = { showAccount = true }) {
-                    Text(if (competition.enabled && competition.authenticated) competition.playerName + " • " + gameText("Hesap", "Account")
-                        else gameText("Misafir • Play Games'e bağlan", "Guest • Connect Play Games"), color = Muted, fontSize = 12.sp)
+                Surface(onClick = { showAccount = true }, color = Panel, shape = RoundedCornerShape(18.dp),
+                    modifier = Modifier.fillMaxWidth()) {
+                    Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        PlayGamesIcon(Modifier.size(30.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(if (competition.enabled && competition.authenticated) competition.playerName
+                                else gameText("Google Play Games ile giriş", "Sign in with Google Play Games"),
+                                color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                            Text(if (competition.enabled && competition.authenticated)
+                                gameText("Bağlı • Hesabını ve sıralamanı yönet", "Connected • Manage account and rankings")
+                                else gameText("Şu an misafirsin • Dünya sıralamasına katıl", "Playing as guest • Join the world rankings"),
+                                color = Muted, fontSize = 10.sp)
+                        }
+                        Text("›", color = Accent, fontSize = 26.sp)
+                    }
                 }
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
@@ -141,21 +164,30 @@ internal fun HomeScreen(
                     title = { Text(gameText("Hesap ve sıralama", "Account & rankings")) },
                     confirmButton = { TextButton(onClick = { showAccount = false }) { Text(gameText("KAPAT", "CLOSE")) } },
                     text = {
-                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Column(Modifier.verticalScroll(rememberScrollState()).padding(4.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(gameText("DÜNYA SIRALAMASI", "WORLD RANKINGS"), color = Accent, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                         Text(if (competition.enabled && competition.authenticated) competition.playerName
                             else gameText("Misafir olarak hemen oynayabilir veya rekabete katılabilirsin.", "Play immediately as a guest or join the competition."), color = Color.White, fontSize = 12.sp)
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedButton(onClick = { competition.guest() }, enabled = !competition.busy, modifier = Modifier.weight(1f)) {
-                                Text(if (competition.enabled) gameText("BAĞLANTIYI KES", "DISCONNECT") else gameText("MİSAFİR", "GUEST"), fontSize = 10.sp, color = Muted)
-                            }
-                            Button(onClick = { competition.join() }, enabled = !competition.busy && !(competition.enabled && competition.authenticated), modifier = Modifier.weight(1f)) {
-                                Text(when {
-                                    competition.enabled && competition.authenticated -> gameText("BAĞLANDI ✓", "CONNECTED ✓")
-                                    competition.busy -> gameText("BAĞLANIYOR…", "CONNECTING…")
-                                    else -> gameText("PLAY GAMES'E BAĞLAN", "CONNECT PLAY GAMES")
-                                }, fontSize = 10.sp)
-                            }
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            PlayGamesIcon(Modifier.size(32.dp))
+                            Text("Google Play Games", color = Color.White, fontWeight = FontWeight.Bold)
+                        }
+                        Text(gameText("Google hesabınla giriş yap; oyuncu adınla dünya sıralamasında yarış. Misafir olarak da oynayabilirsin.",
+                            "Sign in with your Google account and compete using your player name. You can also play as a guest."), color = Muted, fontSize = 12.sp)
+                        Button(onClick = { competition.join() }, enabled = !competition.busy && !(competition.enabled && competition.authenticated),
+                            modifier = Modifier.fillMaxWidth(), contentPadding = PaddingValues(12.dp)) {
+                            PlayGamesIcon(Modifier.size(22.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text(when {
+                                competition.enabled && competition.authenticated -> gameText("BAĞLANDI ✓", "CONNECTED ✓")
+                                competition.busy -> gameText("GİRİŞ YAPILIYOR…", "SIGNING IN…")
+                                else -> gameText("GOOGLE HESABIMLA GİRİŞ YAP", "SIGN IN WITH GOOGLE")
+                            }, fontSize = 11.sp)
+                        }
+                        OutlinedButton(onClick = { competition.guest() }, enabled = !competition.busy,
+                            modifier = Modifier.fillMaxWidth()) {
+                            Text(if (competition.enabled) gameText("BAĞLANTIYI KES • MİSAFİR OL", "DISCONNECT • PLAY AS GUEST")
+                                else gameText("MİSAFİR OLARAK DEVAM ET", "CONTINUE AS GUEST"), fontSize = 10.sp, color = Muted)
                         }
                         if (!competition.configured) Text(gameText("Çevrim içi rekabet yakında. Şimdilik misafir olarak oynayabilirsin.", "Online competition is coming soon. Play as a guest for now."), color = Muted, fontSize = 11.sp)
                         Text(gameText("Seçili modun sıralaması", "Rankings for the selected mode"), color = Muted, fontSize = 11.sp)
@@ -265,5 +297,25 @@ private fun HomeSecondary(text: String, modifier: Modifier, onClick: () -> Unit)
         colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
         border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.14f))) {
         Text(text, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+    }
+}
+
+/** Generic controller pictogram, rather than an unofficial Google logo. */
+@Composable
+private fun PlayGamesIcon(modifier: Modifier = Modifier) {
+    Canvas(modifier) {
+        val w = size.width; val h = size.height
+        drawRoundRect(Accent, androidx.compose.ui.geometry.Offset(0f, h*.2f), androidx.compose.ui.geometry.Size(w,h*.6f), androidx.compose.ui.geometry.CornerRadius(w*.18f))
+        drawLine(Night, androidx.compose.ui.geometry.Offset(w*.17f,h*.5f), androidx.compose.ui.geometry.Offset(w*.43f,h*.5f), w*.07f)
+        drawLine(Night, androidx.compose.ui.geometry.Offset(w*.3f,h*.37f), androidx.compose.ui.geometry.Offset(w*.3f,h*.63f), w*.07f)
+        drawCircle(Night,w*.055f,androidx.compose.ui.geometry.Offset(w*.72f,h*.42f))
+        drawCircle(Night,w*.055f,androidx.compose.ui.geometry.Offset(w*.83f,h*.58f))
+    }
+}
+@Composable
+private fun AccountIcon(modifier: Modifier = Modifier) {
+    Canvas(modifier) {
+        drawCircle(Accent,size.width*.17f,androidx.compose.ui.geometry.Offset(size.width*.5f,size.height*.28f))
+        drawRoundRect(Accent,androidx.compose.ui.geometry.Offset(size.width*.2f,size.height*.54f),androidx.compose.ui.geometry.Size(size.width*.6f,size.height*.35f),androidx.compose.ui.geometry.CornerRadius(size.width*.16f))
     }
 }

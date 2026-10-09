@@ -65,6 +65,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
@@ -508,6 +509,7 @@ private fun GameScreen(soundEnabled: Boolean, onExitToMenu: () -> Unit) {
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth()
+                .testTag("gameplay-scene")
                 .onSizeChanged {
                     engine.resize(it.width.toFloat(), it.height.toFloat())
                     frameVersion++

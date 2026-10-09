@@ -28,3 +28,11 @@ Resmi kaynaklar:
 https://developer.android.com/guide/playcore/in-app-review
 https://developer.android.com/guide/playcore/in-app-review/kotlin-java
 https://support.google.com/googleplay/android-developer/answer/9898842
+
+
+## Store refresh and account clarity — 9 October 2026
+- Submitted five store changes for Google review: Turkish listing, English title/short/full description and phone screenshots. Managed publishing remains off. No paid campaigns or billing changes.
+- English title: TapToFlip: Frog Jump. Turkish title: TapToFlip: Kurbağa Oyunu. Both descriptions explain the alternate spaced name Tap to Flip and relevant frog jumping / arcade / reflex gameplay naturally; no keyword ranking guarantee.
+- Removed five obsolete June screenshots. Four phone assets now show current home, frog colors and two actual gameplay-area captures (no test ads or fabricated scores). Turkish currently inherits default graphics. New account UI screenshots will replace home after 1.5 is released.
+- Account UI prepared in version 1.5 (code 9): visible profile icon/header button, signed-in status card, controller pictogram, full-width Google sign-in and guest actions, scrollable account dialog. Sign-in SDK behavior unchanged.
+- Debug build/lint and two device UI/capture checks passed. User must generate a signed 1.5 AAB to ship account changes; only store metadata was submitted in this update.
