@@ -52,7 +52,11 @@ class GameplayRulesTest {
     @Test fun passedObstacleAwardsOnceAndTimeAttackEnds() {
         val engine = GameEngine(gravity = 0f, baseScrollSpeed = 0f, mode = GameMode.TIME_ATTACK)
         engine.resize(400f, 700f)
-        engine.replacePlatformsForTest(listOf(PlatformState(99, -10f, 0f, 10f, 10f)))
+        // Keep a far obstacle so automatic spawning cannot introduce a random
+        // collision while this fixture checks a passed obstacle and the timer.
+        engine.replacePlatformsForTest(listOf(
+            PlatformState(99, -10f, 0f, 10f, 10f),
+            PlatformState(100, 2000f, 0f, 10f, 10f)))
         engine.update(0.02f)
         assertEquals(1, engine.combo.streak)
         repeat(300) { engine.update(0.25f) }

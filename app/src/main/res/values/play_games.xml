@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Play Console draft resources. Debug and Play signing credentials linked. Live verification and publication remain required. -->
+    <string name="game_services_project_id" translatable="false">101726480194</string>
+    <string name="leaderboard_classic" translatable="false">CgkIws77-voCEAIQAA</string>
+    <string name="leaderboard_time_attack" translatable="false">CgkIws77-voCEAIQAQ</string>
+    <string name="leaderboard_survival" translatable="false">CgkIws77-voCEAIQAg</string>
+</resources>

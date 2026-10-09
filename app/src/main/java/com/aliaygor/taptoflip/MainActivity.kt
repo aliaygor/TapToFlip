@@ -72,6 +72,9 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
@@ -125,6 +128,8 @@ private const val ADMOB_BANNER_AD_UNIT_ID = "ca-app-pub-5287725227601079/1395452
 private const val ADMOB_INTERSTITIAL_AD_UNIT_ID = "ca-app-pub-5287725227601079/3135360764"
 
 class MainActivity : ComponentActivity() {
+    internal val reviewPrompt by lazy { ReviewPrompt(this) }
+    internal val competition by lazy { PlayGamesCompetition(this) }
     internal val rewardedContinue by lazy {
         RewardedContinue(this) { adPolicy.shown(android.os.SystemClock.elapsedRealtime()) }
     }
@@ -137,6 +142,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         super.onCreate(savedInstanceState)
+        competition.refresh()
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
@@ -157,6 +163,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         GameReminders(this).visit()
+        competition.refresh()
     }
 
     override fun onPause() {
@@ -275,12 +282,14 @@ private fun GameApp() {
                 frog = rememberFrogBitmap(),
                 soundEnabled = soundEnabled,
                 progress = progress,
+                competition = activity?.competition,
                 onToggleSound = { soundEnabled = it; progress.soundEnabled = it },
                 onStart = { screen = AppScreen.GAME },
                 onHowToPlay = { screen = AppScreen.HOW_TO_PLAY },
+                onRate = { activity?.reviewPrompt?.openStore() },
                 onShare = {
-                    val message = if (progress.best > 0)
-                        "My best is ${progress.best} in Tap to Flip. Can you beat it?"
+                    val message = if (progress.modeBest(progress.selectedMode) > 0)
+                        "My best is ${progress.modeBest(progress.selectedMode)} in TapToFlip (${if (progress.selectedMode == GameMode.TIME_ATTACK) "60-second race" else "Endless run"}). Can you beat it?"
                     else "Try Tap to Flip! Tap, dodge, and see how far you can go."
                     val intent = Intent(Intent.ACTION_SEND).apply {
                         type = "text/plain"
@@ -364,7 +373,9 @@ private fun GameScreen(soundEnabled: Boolean, onExitToMenu: () -> Unit) {
         context.getSharedPreferences("tap_to_flip", Context.MODE_PRIVATE)
     }
     val progress = remember { PlayerProgress(context) }
-    val engine = remember { GameEngine(mode = progress.selectedMode, earlyLosses = progress.earlyLosses) }
+    val competition = activity?.competition
+    var rankedOwner by remember { mutableStateOf(competition?.rankedOwner(progress.selectedMode)) }
+    val engine = remember { GameEngine(mode = progress.selectedMode, earlyLosses = progress.earlyLosses, ranked = rankedOwner != null) }
     val audio = remember { GameAudio() }
     val haptic = LocalHapticFeedback.current
     val frog = rememberFrogBitmap()
@@ -374,6 +385,9 @@ private fun GameScreen(soundEnabled: Boolean, onExitToMenu: () -> Unit) {
     var roundFinalized by remember { mutableStateOf(false) }
     var transitioning by remember { mutableStateOf(false) }
     var rewardAttempted by remember { mutableStateOf(false) }
+    var starRunId by remember { mutableStateOf(java.util.UUID.randomUUID().toString()) }
+    var starsDoubled by remember { mutableStateOf(false) }
+    val runStars = if (engine.score > 0) (1 + engine.score / 100).coerceAtMost(5) else 0
     val reward = activity?.rewardedContinue
     var roundBest by remember { mutableIntStateOf(highScore) }
     val dailyTarget = remember { progress.dailyTarget }
@@ -384,10 +398,17 @@ private fun GameScreen(soundEnabled: Boolean, onExitToMenu: () -> Unit) {
         while (countdown > 0) { delay(1000); countdown-- }
         Telemetry.emit("game_start", "mode" to engine.mode)
     }
+    fun finalizeRound() {
+        if (roundFinalized) return
+        progress.recordRun(engine)
+        if (engine.state == GameStatus.GAME_OVER) progress.awardRunStars(starRunId, if (engine.score > 0) (1 + engine.score / 100).coerceAtMost(5) else 0)
+        competition?.finishRun(engine, rankedOwner)
+        roundFinalized = true
+    }
     fun finishRound(next: () -> Unit) {
         if (transitioning || reward?.showing == true) return
         transitioning = true
-        if (!roundFinalized) { progress.recordRun(engine); roundFinalized = true }
+        finalizeRound()
         if (engine.state == GameStatus.GAME_OVER && !rewardAttempted) {
             activity?.showInterstitial(engine.roundAge) { transitioning = false; next() }
                 ?: run { transitioning = false; next() }
@@ -413,7 +434,7 @@ private fun GameScreen(soundEnabled: Boolean, onExitToMenu: () -> Unit) {
         onDispose {
             activity?.lifecycle?.removeObserver(observer)
 
-            if (!roundFinalized) { progress.recordRun(engine); roundFinalized = true }
+            finalizeRound()
             progress.saveBest(engine.mode, engine.score)
             audio.release()
         }
@@ -430,9 +451,13 @@ private fun GameScreen(soundEnabled: Boolean, onExitToMenu: () -> Unit) {
                 val previousState = engine.state
                 val previousMilestone = engine.score / 100
                 val previousBonus = engine.bonusFeedback
+                val previousBubbles = engine.collectedBubbles
                 engine.update(dt)
                 if (engine.score / 100 > previousMilestone) Telemetry.emit("score_reached", "score" to engine.score, "mode" to engine.mode)
-                if (engine.bonusFeedback > previousBonus && soundEnabled) audio.jump()
+                if (engine.collectedBubbles > previousBubbles) {
+                    if (soundEnabled) audio.jump()
+                    else haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                } else if (engine.bonusFeedback > previousBonus && soundEnabled) audio.jump()
 
                 if (engine.score > highScore) {
                     highScore = engine.score
@@ -452,6 +477,9 @@ private fun GameScreen(soundEnabled: Boolean, onExitToMenu: () -> Unit) {
     // The HUD and goal text must refresh even when this run is below the saved best.
     frameVersion
     Column(modifier = Modifier.fillMaxSize().background(Ink)) {
+        Text(if (engine.ranked && !engine.reviveUsed) gameText("REKABET TURU • Aynı zorluk, dünya sıralaması", "RANKED RUN • Standard difficulty, world rankings")
+            else gameText("MİSAFİR / KİŞİSEL TUR", "GUEST / PERSONAL RUN"),
+            Modifier.fillMaxWidth().background(DeepGreen).padding(4.dp), color = Lime, fontSize = 10.sp, textAlign = TextAlign.Center)
         ScoreBar(engine.score, highScore, { finishRound(onExitToMenu) }) {
             engine.pause()
             frameVersion++
@@ -474,6 +502,8 @@ private fun GameScreen(soundEnabled: Boolean, onExitToMenu: () -> Unit) {
             color = Color.White.copy(alpha = 0.8f), fontSize = 11.sp, textAlign = TextAlign.Center,
             maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
         )
+        Text(gameText("Baloncuk serisi", "Bubble streak") + " ${engine.bubbleStreak % 5}/5 • +25",
+            Modifier.fillMaxWidth(), color = Color(0xFFFFE69C), fontSize = 10.sp, textAlign = TextAlign.Center)
         Box(
             modifier = Modifier
                 .weight(1f)
@@ -497,14 +527,14 @@ private fun GameScreen(soundEnabled: Boolean, onExitToMenu: () -> Unit) {
                 }
         ) {
             frameVersion
-            GameplayCanvas(engine, frameClock)
-            FrogSprite(engine, frog, frameClock)
+            GameplayCanvas(engine, frameClock, progress.frogStyle)
+            FrogSprite(engine, styledFrogBitmap(frog, progress.frogStyle), frameClock, progress.frogStyle.filter())
             if (engine.state == GameStatus.RUNNING && engine.roundAge < 2.2f) {
                 TapHint(engine, frameClock)
             }
 
             if (tutorial) {
-                CenterOverlay(gameText("Nasıl oynanır?", "How to play"), gameText("Dokunarak zıpla, engellerden kaç.", "Tap to hop. Dodge the obstacles.")) {
+                CenterOverlay(gameText("Nasıl oynanır?", "How to play"), gameText("Dokunarak zıpla, engellerden kaç. Baloncuklar +10 puan!", "Tap to hop. Dodge obstacles. Bubbles give +10 points!")) {
                     Text(gameText("İlk 25 saniye ekran kenarları seni korur. Sonra kendi ritmini bul!", "Screen edges protect you for the first 25 seconds. Find your rhythm!"), color = Ink)
                     PrimaryButton(gameText("HAZIRIM", "READY"), { progress.tutorialSeen = true; tutorial = false })
                 }
@@ -514,6 +544,18 @@ private fun GameScreen(soundEnabled: Boolean, onExitToMenu: () -> Unit) {
             if (engine.bonusFeedback > 0f) {
                 Text("+ ${5 * engine.combo.multiplier} • ${engine.combo.multiplier}x", Modifier.align(Alignment.TopCenter).padding(top = 40.dp)
                     .graphicsLayer { alpha = engine.bonusFeedback; translationY = -30f * (1f - engine.bonusFeedback) }, color = Lime, fontWeight = FontWeight.Black, fontSize = 24.sp)
+            }
+            if (engine.bubbleMilestoneFeedback > 0f) {
+                Text(gameText("5 BALONCUK • BONUS +25", "5 BUBBLES • BONUS +25"),
+                    Modifier.align(Alignment.TopCenter).padding(top = 72.dp).background(Color(0xFF183B43), RoundedCornerShape(16.dp)).padding(12.dp),
+                    color = Color(0xFFFFE69C), fontWeight = FontWeight.Bold)
+            }
+            if (engine.bubbleFeedback > 0f) {
+                Text(gameText("BALONCUK", "BUBBLE") + " +${GameplayRules.BUBBLE_POINTS}",
+                    Modifier.align(Alignment.TopCenter).padding(top = 76.dp).graphicsLayer {
+                        alpha = engine.bubbleFeedback
+                        translationY = -24f * (1f - engine.bubbleFeedback)
+                    }, color = Color(0xFFDCF9FF), fontSize = 18.sp, fontWeight = FontWeight.Black)
             }
             when (engine.state) {
                 GameStatus.PAUSED -> PauseOverlay(
@@ -525,15 +567,28 @@ private fun GameScreen(soundEnabled: Boolean, onExitToMenu: () -> Unit) {
                 )
 
                 GameStatus.GAME_OVER -> GameOverOverlay(
+                    competitionSummary = if (engine.ranked && !engine.reviveUsed)
+                        gameText("Bu tur bitince skorun dünya sıralamasına gönderilecek. Reklamla devam edersen kişisel rekor olarak kalır.", "Finishing this run submits your score to the world rankings. Continuing with an ad makes it a personal result.")
+                        else gameText("Bu skor kişisel rekorlarında saklanır.", "This score is saved in your personal records."),
                     dailyTaskSummary = progress.tasks.advance(engine.score, engine.combo.events, true).let {
                         gameText("Günlük görevler", "Daily tasks") + " • ${it.completed.count { done -> done }}/3 ★"
+                    },
+                    runStars = runStars,
+                    starsDoubled = starsDoubled,
+                    starRewardReady = reward?.ready == true,
+                    onDoubleStars = {
+                        rewardAttempted = true
+                        reward?.show(onEarned = {
+                            finalizeRound()
+                            starsDoubled = progress.awardRunStars(starRunId, runStars, doubled = true)
+                        }) { frameVersion++ }
                     },
                     timedOut = engine.mode == GameMode.TIME_ATTACK && engine.remainingSeconds <= 0f,
                     score = engine.score,
                     highScore = highScore,
                     previousBest = roundBest,
                     dailyTarget = dailyTarget,
-                    showContinue = (engine.mode != GameMode.TIME_ATTACK || engine.remainingSeconds > 0f) && !engine.reviveUsed && reward?.configured == true,
+                    showContinue = (engine.mode != GameMode.TIME_ATTACK || engine.remainingSeconds > 0f) && !engine.reviveUsed && !roundFinalized && reward?.configured == true,
                     continueReady = reward?.ready == true,
                     busy = transitioning || reward?.showing == true,
                     continueMessage = reward?.message,
@@ -550,9 +605,13 @@ private fun GameScreen(soundEnabled: Boolean, onExitToMenu: () -> Unit) {
                         finishRound {
                             roundBest = highScore
                             Telemetry.emit("retry_clicked", "mode" to engine.mode)
+                            rankedOwner = competition?.rankedOwner(engine.mode)
+                            engine.ranked = rankedOwner != null
                             engine.earlyLosses = progress.earlyLosses
                             engine.reset()
                             countdown = 3
+                            starRunId = java.util.UUID.randomUUID().toString()
+                            starsDoubled = false
                             roundFinalized = false
                             rewardAttempted = false
                             frameVersion++
@@ -607,7 +666,7 @@ private fun ScoreChip(label: String, value: String, color: Color) {
 }
 
 @Composable
-internal fun BoxScope.FrogSprite(engine: GameEngine, frog: ImageBitmap, frameClock: IntState) {
+internal fun BoxScope.FrogSprite(engine: GameEngine, frog: ImageBitmap, frameClock: IntState, frogFilter: ColorFilter? = null) {
     // Plain mutable engine fields require an observable frame before taking a render snapshot.
     frameClock.intValue
     val position = IntOffset(engine.player.x.roundToInt(), engine.player.y.roundToInt())
@@ -619,6 +678,7 @@ internal fun BoxScope.FrogSprite(engine: GameEngine, frog: ImageBitmap, frameClo
     Image(
         bitmap = frog,
         contentDescription = "Frog",
+        colorFilter = frogFilter,
         contentScale = ContentScale.Fit,
         modifier = Modifier
             .offset {
@@ -669,12 +729,18 @@ private fun BoxScope.TapHint(engine: GameEngine, frameClock: IntState) {
 }
 
 @Composable
-private fun GameplayCanvas(engine: GameEngine, frameClock: IntState) {
+private fun GameplayCanvas(engine: GameEngine, frameClock: IntState, style: FrogStyle = FrogStyle.GREEN) {
+    val bonusPaint = remember { android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+        color = android.graphics.Color.WHITE; textAlign = android.graphics.Paint.Align.CENTER
+        typeface = android.graphics.Typeface.DEFAULT_BOLD
+        setShadowLayer(3f, 0f, 1f, android.graphics.Color.DKGRAY)
+    } }
     Canvas(modifier = Modifier.fillMaxSize()) {
         // Observe in the draw phase so retained engine instances still redraw every frame.
         frameClock.intValue
-        drawSky()
+        drawSky(engine.roundAge)
         drawHills()
+        drawRect(Color(0xFF071626).copy(alpha = ((engine.roundAge - 45f) / 90f).coerceIn(0f,1f) * 0.5f))
         drawClouds(engine.difficulty)
         engine.platforms.forEach { obstacle ->
             when (obstacle.type) {
@@ -685,7 +751,41 @@ private fun GameplayCanvas(engine: GameEngine, frameClock: IntState) {
                 ObstacleType.FIREFLY -> drawFireflyObstacle(obstacle, engine.roundAge)
             }
         }
-        drawFrogLimbs(engine)
+        engine.bubbles.forEach { bubble ->
+            val center = Offset(bubble.x, bubble.y)
+            val r = bubble.radius
+            val shimmer = 0.6f + 0.2f * sin(engine.roundAge * 4f)
+            drawCircle(Color(0xFFFFD866).copy(alpha = 0.16f * shimmer), r * 1.45f, center)
+            drawCircle(Brush.radialGradient(listOf(Color(0xFFB7F5FF), Color(0xFF46C5E5).copy(alpha = 0.6f)), center, r), r, center)
+            drawCircle(Color(0xFFFFE69C), r, center, style = Stroke(width = r * 0.14f))
+            val star = Path().apply {
+                repeat(8) { i ->
+                    val angle = i * Math.PI / 4 - Math.PI / 2
+                    val length = r * if (i % 2 == 0) 0.6f else 0.26f
+                    val x = center.x + (kotlin.math.cos(angle) * length).toFloat()
+                    val y = center.y + (sin(angle) * length).toFloat()
+                    if (i == 0) moveTo(x,y) else lineTo(x,y)
+                }
+                close()
+            }
+            drawPath(star, Color(0xFFFFF2B8))
+            drawCircle(Color.White.copy(alpha = 0.95f), r * 0.14f, center + Offset(-r * 0.4f, -r * 0.4f))
+            bonusPaint.textSize = r * 0.72f
+            drawContext.canvas.nativeCanvas.drawText("+10", center.x, center.y - r * 1.2f, bonusPaint)
+        }
+        if (engine.bubbleFeedback > 0f) {
+            val progress = 1f - engine.bubbleFeedback
+            val center = Offset(engine.bubblePopX, engine.bubblePopY)
+            drawCircle(Color(0xFFDCF9FF).copy(alpha = engine.bubbleFeedback),
+                engine.player.size * (0.25f + progress * 0.5f), center, style = Stroke(width = 2f))
+            repeat(6) { index ->
+                val angle = index * Math.PI / 3.0
+                val distance = engine.player.size * (0.25f + progress * 0.65f)
+                drawCircle(Color.White.copy(alpha = engine.bubbleFeedback), engine.player.size * 0.045f,
+                    center + Offset((kotlin.math.cos(angle) * distance).toFloat(), (sin(angle) * distance).toFloat()))
+            }
+        }
+        drawFrogLimbs(engine, style)
         if (engine.protectionSeconds > 0f) {
             drawCircle(Color(0xFFCBF578), engine.player.size * 0.85f,
                 Offset(engine.player.x + engine.player.size / 2f, engine.player.y + engine.player.size / 2f),
@@ -725,7 +825,7 @@ private fun GameplayCanvas(engine: GameEngine, frameClock: IntState) {
     }
 }
 
-private fun DrawScope.drawFrogLimbs(engine: GameEngine) {
+private fun DrawScope.drawFrogLimbs(engine: GameEngine, style: FrogStyle) {
     if (engine.state == GameStatus.GAME_OVER) return
     val extension = (
         (-engine.player.velocityY / 690f).coerceIn(0f, 1f) * 0.7f +
@@ -736,8 +836,8 @@ private fun DrawScope.drawFrogLimbs(engine: GameEngine) {
     val size = engine.player.size
     val left = engine.player.x
     val top = engine.player.y
-    val limbColor = Color(0xFF69C934)
-    val footColor = Color(0xFFD7F04B)
+    val limbColor = style.color(Color(0xFF69C934))
+    val footColor = style.color(Color(0xFFD7F04B))
     val stroke = size * 0.12f
     val armSpread = size * (0.12f + extension * 0.32f)
     val legSpread = size * (0.12f + extension * 0.38f)
@@ -779,8 +879,20 @@ private fun DrawScope.drawFrogLimbs(engine: GameEngine) {
     }
 }
 
-private fun DrawScope.drawSky() {
-    drawRect(Brush.verticalGradient(listOf(SkyTop, SkyBottom)))
+private fun DrawScope.drawSky(age: Float = 0f) {
+    val sunset = (age / 60f).coerceIn(0f, 1f)
+    val night = ((age - 60f) / 60f).coerceIn(0f, 1f)
+    val top = lerp(lerp(SkyTop, Color(0xFF775487), sunset), Color(0xFF101D3D), night)
+    val bottom = lerp(lerp(SkyBottom, Color(0xFFFFC791), sunset), Color(0xFF415D80), night)
+    drawRect(Brush.verticalGradient(listOf(top,bottom)))
+    if (night > 0f) {
+        repeat(26) { i ->
+            val x = ((i * 37 + 11) % 101) / 101f * size.width
+            val y = ((i * 23 + 7) % 83) / 100f * size.height * 0.55f
+            drawCircle(Color.White.copy(alpha = night * 0.7f), 1.8f, Offset(x,y))
+        }
+        drawCircle(Color(0xFFFFF1C4).copy(alpha = night), size.width * 0.045f, Offset(size.width * 0.82f, size.height * 0.12f))
+    }
 }
 
 private fun DrawScope.drawHills() {
@@ -1016,16 +1128,28 @@ private fun DrawScope.drawFireflyObstacle(firefly: PlatformState, roundAge: Floa
 
 @Composable
 private fun PauseOverlay(onResume: () -> Unit, onMenu: () -> Unit) {
-    CenterOverlay("PAUSED", "Your hop is waiting.") {
-        PrimaryButton("RESUME", onResume)
-        Spacer(Modifier.height(8.dp))
-        SecondaryButton(gameText("ANA MENÜ", "MAIN MENU"), onMenu)
+    CenterOverlay("PAUSED", "Your hop is waiting.") { compact ->
+        if (compact) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                PrimaryButton("RESUME", onResume, compact = true, modifier = Modifier.weight(1f))
+                SecondaryButton(gameText("ANA MENÜ", "MAIN MENU"), onMenu, compact = true, modifier = Modifier.weight(1f))
+            }
+        } else {
+            PrimaryButton("RESUME", onResume)
+            Spacer(Modifier.height(8.dp))
+            SecondaryButton(gameText("ANA MENÜ", "MAIN MENU"), onMenu)
+        }
     }
 }
 
 @Composable
 private fun GameOverOverlay(
+    competitionSummary: String = "",
     dailyTaskSummary: String = "",
+    runStars: Int = 0,
+    starsDoubled: Boolean = false,
+    starRewardReady: Boolean = false,
+    onDoubleStars: () -> Unit = {},
     timedOut: Boolean = false,
     score: Int,
     highScore: Int,
@@ -1048,7 +1172,16 @@ private fun GameOverOverlay(
         Spacer(Modifier.height(8.dp))
         Text(if (score >= dailyTarget) "Daily goal reached!" else "Today's goal: $dailyTarget points",
             color = Ink, fontSize = 13.sp)
+        Text(competitionSummary, color = DeepGreen, fontSize = 11.sp, textAlign = TextAlign.Center)
         Text(dailyTaskSummary, color = DeepGreen, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+        if (runStars > 0) {
+            Text(gameText("Tur ödülü", "Run reward") + " • ${runStars * if (starsDoubled) 2 else 1} ★", color = DeepGreen)
+            if (!starsDoubled) {
+                PrimaryButton(gameText("REKLAM İZLE • ${runStars * 2} ★ AL", "WATCH AD • GET ${runStars * 2} ★"), onDoubleStars,
+                    enabled = starRewardReady && !busy && actionsReady)
+                Text(gameText("Görünüm açmak için. Puanın değişmez. Bu turu tamamlar.", "For appearances. Score stays the same. Finishes this run."), color = DeepGreen, fontSize = 11.sp)
+            }
+        }
         Spacer(Modifier.height(16.dp))
         if (showContinue) {
             PrimaryButton(if (continueReady) "WATCH AD • CONTINUE ONCE" else "PREPARING CONTINUE AD…", onContinue,
@@ -1068,7 +1201,7 @@ private fun GameOverOverlay(
 private fun CenterOverlay(
     title: String,
     subtitle: String,
-    actions: @Composable ColumnScope.() -> Unit
+    actions: @Composable ColumnScope.(Boolean) -> Unit
 ) {
     BoxWithConstraints(
         modifier = Modifier.fillMaxSize().background(Ink.copy(alpha = 0.66f)),
@@ -1095,7 +1228,7 @@ private fun CenterOverlay(
                 Text(subtitle, color = Ink.copy(alpha = 0.78f), fontWeight = FontWeight.SemiBold,
                     fontSize = if (compact) 12.sp else 14.sp)
                 Spacer(Modifier.height(if (compact) 10.dp else 22.dp))
-                actions()
+                actions(compact)
             }
         }
     }
@@ -1136,13 +1269,13 @@ private fun rememberFrogBitmap(): ImageBitmap {
 }
 
 @Composable
-private fun PrimaryButton(text: String, onClick: () -> Unit, enabled: Boolean = true) {
+private fun PrimaryButton(text: String, onClick: () -> Unit, enabled: Boolean = true, compact: Boolean = false, modifier: Modifier = Modifier) {
     Button(
         onClick = onClick,
         enabled = enabled,
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
-            .height(58.dp),
+            .height(if (compact) 44.dp else 58.dp),
         colors = ButtonDefaults.buttonColors(containerColor = DeepGreen, contentColor = Color.White),
         shape = RoundedCornerShape(22.dp),
         elevation = ButtonDefaults.buttonElevation(
@@ -1152,7 +1285,7 @@ private fun PrimaryButton(text: String, onClick: () -> Unit, enabled: Boolean = 
             hoveredElevation = 10.dp
         )
     ) {
-        Text(text, fontSize = 18.sp, fontWeight = FontWeight.Black)
+        Text(text, fontSize = if (compact) 14.sp else 18.sp, fontWeight = FontWeight.Black)
     }
 }
 
@@ -1174,14 +1307,14 @@ private fun MenuTextButton(text: String, onClick: () -> Unit, color: Color = Ink
 }
 
 @Composable
-private fun SecondaryButton(text: String, onClick: () -> Unit, enabled: Boolean = true) {
+private fun SecondaryButton(text: String, onClick: () -> Unit, enabled: Boolean = true, compact: Boolean = false, modifier: Modifier = Modifier) {
     OutlinedButton(
         onClick = onClick,
         enabled = enabled,
-        modifier = Modifier.fillMaxWidth().height(50.dp),
+        modifier = modifier.fillMaxWidth().height(if (compact) 44.dp else 50.dp),
         shape = RoundedCornerShape(18.dp)
     ) {
-        Text(text, color = Ink, fontWeight = FontWeight.Bold)
+        Text(text, color = Ink, fontWeight = FontWeight.Bold, fontSize = if (compact) 12.sp else 14.sp)
     }
 }
 

@@ -61,20 +61,20 @@ internal class GameReminders(private val context: Context) {
         }
         val pending = PendingIntent.getActivity(context, 410, intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val text = when (count % 3) {
-            0 -> if (best > 0) "Your record is $best. Can you beat it today?"
-                else "Your first record is waiting. Ready for a little hop?"
-            1 -> "Got a minute? Tap, dodge, and try today's challenge."
-            else -> if (best > 0) "One more try at $best? Your next hop could be your best."
-                else "One tap is all it takes. How far can you go?"
+        val locale = context.resources.configuration.locales[0]
+        val turkish = ReminderPolicy.useTurkish(locale.language, locale.country)
+        val text = if (turkish) when (count % 3) {
+            0 -> if (best > 0) "Rekorun $best. Bugün geçebilir misin?" else "İlk rekorun seni bekliyor. Bir tur oynayalım mı?"
+            1 -> "Bir dakikan var mı? Zıpla, baloncuk topla ve yeni rekorunu yap."
+            else -> "Kurbağan seni bekliyor. Bir tur daha?"
+        } else when (count % 3) {
+            0 -> if (best > 0) "Your record is $best. Can you beat it today?" else "Your first record is waiting. Ready for a little hop?"
+            1 -> "Got a minute? Hop, collect bubbles and beat your best."
+            else -> "Your frog is waiting. One more run?"
         }
         val notification = NotificationCompat.Builder(context, CHANNEL)
             .setSmallIcon(R.drawable.ic_launcher_monochrome)
-            .setContentTitle(when (count % 3) {
-                0 -> "Can you beat your best?"
-                1 -> "A quick Tap to Flip challenge?"
-                else -> "One more little hop?"
-            })
+            .setContentTitle(if (turkish) "Bir tur TapToFlip?" else "One more TapToFlip run?")
             .setContentText(text).setStyle(NotificationCompat.BigTextStyle().bigText(text))
             .setContentIntent(pending).setAutoCancel(true).setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_LOW).setSilent(true).build()

@@ -26,14 +26,24 @@ data class PlatformState(
     var anchorY: Float = y
 )
 
+data class BubbleState(var x: Float, var y: Float, var radius: Float)
+
 class GameEngine(
     private val random: Random = Random.Default,
     private val gravity: Float = GameplayRules.GRAVITY,
     private val jumpVelocity: Float = GameplayRules.JUMP,
     private val baseScrollSpeed: Float = GameplayRules.START_SPEED,
     var mode: GameMode = GameMode.CLASSIC,
-    var earlyLosses: Int = 0
+    var earlyLosses: Int = 0,
+    var ranked: Boolean = false
 ) {
+    val bubbles = mutableListOf<BubbleState>()
+    var bubbleStreak = 0; private set
+    var bubbleMilestoneFeedback = 0f; private set
+    var collectedBubbles = 0; private set
+    var bubbleFeedback = 0f; private set
+    var bubblePopX = 0f; private set
+    var bubblePopY = 0f; private set
     val combo = ComboTracker()
     var bonusFeedback = 0f; private set
     val remainingSeconds get() = (GameplayRules.TIME_ATTACK_SECONDS - roundAge).coerceAtLeast(0f)
@@ -101,6 +111,13 @@ class GameEngine(
                 it.width *= scaleX
                 it.height *= scaleY
             }
+            bubbles.forEach {
+                it.x *= scaleX
+                it.y *= scaleY
+                it.radius *= minOf(scaleX, scaleY)
+            }
+            bubblePopX *= scaleX
+            bubblePopY *= scaleY
             // Only rotation pauses the run; HUD/inset relayouts must keep playing.
             if (orientationChanged) pause()
         }
@@ -146,6 +163,11 @@ class GameEngine(
         combo.reset()
         nextPlatformId = 1
         platforms.clear()
+        bubbles.clear()
+        bubbleStreak = 0
+        bubbleMilestoneFeedback = 0f
+        collectedBubbles = 0
+        bubbleFeedback = 0f
         player.y = worldHeight * 0.48f
         player.velocityY = 0f
 
@@ -174,9 +196,12 @@ class GameEngine(
         val dt = deltaSeconds.coerceIn(0f, 0.033f)
         roundAge += dt
         jumpFeedback = (jumpFeedback - dt * 4.5f).coerceAtLeast(0f)
-        difficulty = GameplayRules.difficulty(roundAge, earlyLosses, mode)
+        difficulty = GameplayRules.difficulty(roundAge, if (ranked) 0 else earlyLosses, mode)
+        bubbleMilestoneFeedback = (bubbleMilestoneFeedback - dt * 0.6f).coerceAtLeast(0f)
+        bubbleFeedback = (bubbleFeedback - dt * 1.5f).coerceAtLeast(0f)
         bonusFeedback = (bonusFeedback - dt).coerceAtLeast(0f)
         val scroll = baseScrollSpeed * (worldWidth / 400f) * difficulty * dt
+        bubbles.forEach { it.x -= scroll }
 
         val wasInsideWorld = !touchesWorldEdge()
         player.velocityY += gravity * (worldHeight / 700f) * dt
@@ -210,6 +235,20 @@ class GameEngine(
             return
         }
 
+        bubbles.removeAll { bubble ->
+            if (touchesBubble(bubble)) {
+                bubbleStreak++
+                if (bubbleStreak % 5 == 0) { bonusScore += 25; bubbleMilestoneFeedback = 1f }
+                bonusScore += GameplayRules.BUBBLE_POINTS
+                score = elapsedScore.toInt() + bonusScore
+                scoreEvent = score / 10
+                collectedBubbles++
+                bubbleFeedback = 1f
+                bubblePopX = bubble.x
+                bubblePopY = bubble.y
+                true
+            } else if (bubble.x + bubble.radius < 0f) { bubbleStreak = 0; true } else false
+        }
         platforms.forEach {
             if (!it.passed && it.x + it.width < player.x) {
                 it.passed = true
@@ -225,6 +264,20 @@ class GameEngine(
         }
         platforms.removeAll { it.x + it.width < -24f }
         while (rightmostEdge() < worldWidth * 1.55f) spawnPlatform()
+    }
+
+    internal fun replaceBubblesForTest(items: List<BubbleState>) {
+        bubbles.clear()
+        bubbles.addAll(items)
+    }
+
+    private fun touchesBubble(bubble: BubbleState): Boolean {
+        val inset = player.size * 0.12f
+        val nearestX = bubble.x.coerceIn(player.x + inset, player.x + player.size - inset)
+        val nearestY = bubble.y.coerceIn(player.y + inset, player.y + player.size - inset)
+        val dx = bubble.x - nearestX
+        val dy = bubble.y - nearestY
+        return dx * dx + dy * dy <= bubble.radius * bubble.radius
     }
 
     internal fun replacePlatformsForTest(items: List<PlatformState>) {
@@ -316,6 +369,14 @@ class GameEngine(
             }
         }
 
+        // Optional rewards belong in open gaps, away from both obstacle edges.
+        // No extra random draws: adding pickups preserves the obstacle sequence.
+        val radius = player.size * 0.24f
+        val clearance = player.size * 0.6f + radius + worldWidth * 0.02f
+        if (previous != null && nextPlatformId % 2 == 0 && gap >= clearance * 2f) {
+            val lane = when (nextPlatformId % 3) { 0 -> 0.36f; 1 -> 0.5f; else -> 0.64f }
+            bubbles += BubbleState(previous.x + previous.width + gap / 2f, worldHeight * lane, radius)
+        }
         platforms += PlatformState(
             id = nextPlatformId++,
             x = (previous?.let { it.x + it.width } ?: worldWidth) + gap,

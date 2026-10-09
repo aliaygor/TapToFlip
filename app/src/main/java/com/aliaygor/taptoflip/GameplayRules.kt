@@ -3,6 +3,7 @@ import kotlin.math.exp
 
 enum class GameMode { CLASSIC, TIME_ATTACK, SURVIVAL }
 object GameplayRules {
+    const val BUBBLE_POINTS = 10
     const val START_SPEED = 95f
     const val GRAVITY = 420f
     const val JUMP = -300f

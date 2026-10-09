@@ -50,7 +50,7 @@ internal class RewardedContinue(private val activity: ComponentActivity, private
         })
     }
 
-    fun show(onResult: (Boolean) -> Unit) {
+    fun show(onEarned: () -> Unit = {}, onResult: (Boolean) -> Unit) {
         if (showing) return
         val current = ad
         if (current == null || SystemClock.elapsedRealtime() - loadedAt >= 3_600_000L) {
@@ -76,6 +76,6 @@ internal class RewardedContinue(private val activity: ComponentActivity, private
                 finish(false)
             }
         }
-        current.show(activity) { earned = true }
+        current.show(activity) { if (!earned) { earned = true; onEarned() } }
     }
 }
